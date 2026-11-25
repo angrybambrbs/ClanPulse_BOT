@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: clanpulse-discord-bot
+    env: node
+    region: singapore
+    plan: free
+    buildCommand: npm install
+    startCommand: node bot.js
+    healthCheckPath: /
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE
+        sync: false
+      - key: CHANNEL_ID
+        sync: false
+      - key: SUPABASE_URL
+        value: https://jzfaggufycangmgwuuks.supabase.co
+      - key: PARSE_BATTLE_FALLBACK_URL
+        sync: false

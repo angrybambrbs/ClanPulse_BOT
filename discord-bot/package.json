@@ -1,0 +1,16 @@
+{
+  "name": "clanpulse-discord-bot",
+  "private": true,
+  "version": "1.0.0",
+  "description": "ClanPulse — бот в Дискорде для оповещений кланов и справочник",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "node bot.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "discord.js": "^14.0.0"
+  }
+}

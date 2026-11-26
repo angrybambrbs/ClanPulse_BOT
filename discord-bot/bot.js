@@ -5,17 +5,43 @@
 const http = require('http');
 const { Client, GatewayIntentBits, EmbedBuilder, TextChannel } = require('discord.js');
 
+const COMMIT = process.env.RENDER_GIT_COMMIT || 'local';
+const STARTED_AT = Date.now();
+const runtimeStatus = {
+  commit: COMMIT,
+  startedAt: new Date(STARTED_AT).toISOString(),
+  ready: false,
+  botTag: null,
+  guilds: [],
+  commands: null,
+  lastError: null,
+};
+let clientRef = null;
+
 // Render Web Service требует HTTP-сервер, который отвечает на health check '/'.
 const PORT = Number(process.env.PORT) || 10000;
 http.createServer((req, res) => {
   if (req.url === '/' || req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('ok');
+  } else if (req.url === '/status') {
+    const live = clientRef;
+    const body = JSON.stringify({
+      ...runtimeStatus,
+      uptimeSec: Math.round((Date.now() - STARTED_AT) / 1000),
+      live: live ? {
+        ready: live.isReady(),
+        botTag: live.user ? live.user.tag : null,
+        guilds: live.guilds.cache.map(g => ({ id: g.id, name: g.name })),
+      } : null,
+    }, null, 2);
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(body);
   } else {
     res.writeHead(404);
     res.end('not found');
   }
-}).listen(PORT, '0.0.0.0', () => console.log(`Health server listening on ${PORT}`));
+}).listen(PORT, '0.0.0.0', () => console.log(`Health server listening on ${PORT} · commit ${COMMIT}`));
 
 const config = {
   botToken: process.env.BOT_TOKEN,
@@ -355,6 +381,7 @@ const client = new Client({ intents: [
   GatewayIntentBits.Guilds,
   GatewayIntentBits.GuildMessages,
 ] });
+clientRef = client;
 
 // Slash-команды не требуют привилегированного Message Content Intent.
 const SLASH_COMMANDS = [
@@ -393,6 +420,49 @@ const SLASH_MAP = {
   contact: 'контакт', unconfirmed: 'неподтверждено', fix: 'править', week: 'статистика',
   events: 'события', matches: 'таблицы', profile: 'профиль',
 };
+
+// Глобальные команды Discord может кэшировать до часа. Дополнительно регистрируем
+// их в каждом сервере — guild-команды появляются сразу.
+let registrationState = null;
+async function registerSlashCommands() {
+  if (!client.application) return;
+  const result = { at: new Date().toISOString(), global: null, guilds: {}, error: null };
+  try {
+    const globalCmds = await client.application.commands.set(SLASH_COMMANDS);
+    result.global = globalCmds.size;
+    console.log('Slash-команды зарегистрированы глобально:', globalCmds.size);
+  } catch (e) {
+    result.error = 'global: ' + e.message;
+    console.error('Глобальная регистрация slash-команд не удалась:', e.message);
+  }
+  for (const guild of client.guilds.cache.values()) {
+    try {
+      const guildCmds = await guild.commands.set(SLASH_COMMANDS);
+      result.guilds[guild.id] = { name: guild.name, count: guildCmds.size };
+      console.log(`Slash-команды зарегистрированы в сервере «${guild.name}» (${guild.id}):`, guildCmds.size);
+    } catch (e) {
+      result.guilds[guild.id] = { name: guild.name, error: e.message };
+      console.error(`Slash-команды НЕ зарегистрированы в сервере «${guild.name}» (${guild.id}):`, e.message);
+    }
+  }
+  registrationState = result;
+  runtimeStatus.commands = result;
+  runtimeStatus.lastError = result.error;
+}
+
+client.on('guildCreate', async guild => {
+  console.log(`Бот добавлен на сервер «${guild.name}» (${guild.id})`);
+  runtimeStatus.guilds = client.guilds.cache.map(g => ({ id: g.id, name: g.name }));
+  try {
+    const cmds = await guild.commands.set(SLASH_COMMANDS);
+    console.log(`Slash-команды зарегистрированы в сервере «${guild.name}»:`, cmds.size);
+    if (registrationState) registrationState.guilds[guild.id] = { name: guild.name, count: cmds.size };
+    runtimeStatus.commands = registrationState;
+  } catch (e) {
+    console.error(`Slash-команды НЕ зарегистрированы в сервере «${guild.name}»:`, e.message);
+  }
+});
+
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
   // Discord ждёт ответа максимум 3 секунды — сразу откладываем и отвечаем редактированием.
@@ -426,9 +496,12 @@ const dumpCmdHelper = async (cmd, args, message) => {
 client.on('messageUpdate', async () => {});
 
 client.on('clientReady', async () => {
-  console.log('Бот ' + client.user.tag + ' готов');
-  try { await client.application.commands.set(SLASH_COMMANDS); console.log('Slash-команды зарегистрированы'); }
-  catch (e) { console.error('Slash-команды не зарегистрированы:', e.message); }
+  console.log('Бот ' + client.user.tag + ' готов · commit ' + COMMIT);
+  runtimeStatus.ready = true;
+  runtimeStatus.botTag = client.user.tag;
+  runtimeStatus.guilds = client.guilds.cache.map(g => ({ id: g.id, name: g.name }));
+  console.log('Серверы бота:', runtimeStatus.guilds.map(g => `${g.name} (${g.id})`).join(', ') || 'бот не добавлен ни на один сервер');
+  await registerSlashCommands();
 
   // Рассылка активных заданий раз в 6 часов
   setInterval(async () => {

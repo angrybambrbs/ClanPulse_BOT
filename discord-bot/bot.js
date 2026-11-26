@@ -170,6 +170,20 @@ const embed = (e) => new EmbedBuilder(e).setColor('#5865f2').setTimestamp();
 async function handleCommand(cmd, message, args = []) {
   const channel = message.channel;
 
+  if (cmd === 'debug') {
+    const fmt = (r) => Array.isArray(r) ? `строк: ${r.length}${r[0] ? ` · первый: ${JSON.stringify(r[0]).slice(0, 160)}` : ''}` : JSON.stringify(r).slice(0, 200);
+    const clans = await sbService('clans?select=id,name&limit=5');
+    const members = await sbService('clan_members?select=clan_id&limit=1');
+    const dir = await sbService('clan_directory?select=id&limit=5');
+    return channel.send(
+      '🔧 **Диагностика Supabase**\n' +
+      `- SERVICE_ROLE: ${process.env.SUPABASE_SERVICE_ROLE ? 'задан' : 'НЕ задан'}\n` +
+      `- clans: ${fmt(clans)}\n` +
+      `- clan_members: ${fmt(members)}\n` +
+      `- clan_directory: ${fmt(dir)}`
+    );
+  }
+
   if (cmd === 'кланы' || cmd === 'clans') {
     const data = await fetchClans();
     const e = embed({
@@ -345,6 +359,7 @@ const client = new Client({ intents: [
 // Slash-команды не требуют привилегированного Message Content Intent.
 const SLASH_COMMANDS = [
   { name: 'help', description: 'Справка по командам' },
+  { name: 'debug', description: 'Диагностика доступа к Supabase' },
   { name: 'clans', description: 'Список кланов' },
   { name: 'zone', description: 'Активные задания / зона' },
   { name: 'stats', description: 'Общая статистика площадки' },
@@ -373,7 +388,7 @@ const SLASH_COMMANDS = [
   ] },
 ];
 const SLASH_MAP = {
-  help: 'help', clans: 'кланы', zone: 'зона', stats: 'стат', tactics: 'тактики',
+  help: 'help', debug: 'debug', clans: 'кланы', zone: 'зона', stats: 'стат', tactics: 'тактики',
   link: 'чат', match: 'матч', apps: 'заявки', rating: 'рейтинг', search: 'поиск',
   contact: 'контакт', unconfirmed: 'неподтверждено', fix: 'править', week: 'статистика',
   events: 'события', matches: 'таблицы', profile: 'профиль',

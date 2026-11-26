@@ -32,8 +32,9 @@ const SB2 = {
 };
 
 async function sbGet(path) {
-  const r = await fetch(SB.base + '/rest/v1/' + path, { headers: { Accept: 'application/vnd.pgrst.object+json' } });
-  return r.json().catch(() => null);
+  // Публичные view/RLS у кланов дергают helper-функции, которые anon-роли недоступны.
+  // Бот — серверный компонент, поэтому читаем теми же service-правами, что и пишем.
+  return sbService(path, 'GET');
 }
 
 async function sbService(path, method = 'POST', body) {
@@ -54,8 +55,9 @@ async function fetchActiveGames() {
   const r = await sbGet('clan_events?select=id,clan_id,title,starts_at,kind&order=starts_at.asc');
   return r && Array.isArray(r) ? r : [];
 }
-async function fetchActiveGamesService() {
-  const r = await sbService('clan_events?select=id,clan_id,title,starts_at,kind&order=starts_at.asc');
+async function fetchActiveGamesService(clanId) {
+  const filter = clanId ? `&clan_id=eq.${clanId}` : '';
+  const r = await sbService(`clan_events?select=id,clan_id,title,starts_at,kind&order=starts_at.asc${filter}`);
   return r && Array.isArray(r) ? r : [];
 }
 // Доп. запросы: рейтинги/поиск/контакты/события/история
@@ -116,13 +118,15 @@ async function repostUnrecognizedDigest() {
   await postToDiscord(ch[0].channel_id, `🔍 **Матчи без статистики**\n${lines}`);
 }
 async function postEventsDigest() {
-  const games = await fetchActiveGamesService();
-  if (!games.length) return;
   const links = await fetchChannelLinks();
   if (!links.length) return;
-  const chanId = links[0].channel_id;
-  const e = embed({ title: '⚡ ClanPulse — события', description: games.slice(0, 10).map((t) => `- **${t.title}** (${new Date(t.starts_at).toLocaleString('ru')})`).join('\n') });
-  await postToDiscord(chanId, e).catch(() => null);
+  for (const link of links) {
+    const games = await fetchActiveGamesService(link.clan_id);
+    if (!games.length) continue;
+    const title = '⚡ ClanPulse — события' + (link.name ? ` · ${link.name}` : '');
+    const e = embed({ title, description: games.slice(0, 10).map((t) => `- **${t.title}** (${new Date(t.starts_at).toLocaleString('ru')})`).join('\n') });
+    await postToDiscord(link.channel_id, e).catch(() => null);
+  }
 }
 
 async function fetchStats() {
@@ -198,20 +202,32 @@ async function handleCommand(cmd, message, args = []) {
 
   if (cmd === 'help' || cmd === 'помощь') {
     return channel.send(
-      '🌏 **ClanPulse Бот** в Discord\n' +
-      '- 🔍 **!кланы** — список кланов\n' +
-      '- 📋 **!зона** — активные задания\n' +
-      '- 📈 **!стат** — общая статистика\n' +
-      '- 🗺 **!тактики** — галерея планов\n' +
-      '- ℹ️ **!help** — справка'
+      '🌏 **ClanPulse Бот** в Discord (slash-команды)\n' +
+      '- 🔍 **/clans** — список кланов\n' +
+      '- 📋 **/zone** — активные задания\n' +
+      '- 📈 **/stats** — общая статистика\n' +
+      '- 🗺 **/tactics** — галерея планов\n' +
+      '- 🔗 **/link clan:<название>** — привязать этот канал к клану с сайта\n' +
+      '- ℹ️ **/help** — справка'
     );
   }
 
   if (cmd === 'чат' || cmd === 'link') {
-    const id = args[0];
-    if (!id || !/^[0-9]{10,}$/.test(id)) return channel.send('Используйте: **!чат <id_канала_дискорд>**');
-    await sbService('clan_channels', 'POST', { channel_id: id, created_at: new Date().toISOString() });
-    return channel.send(`Канал **${id}** связан с сайтом — тут будут видны сообщения чата клана.`);
+    const clanQuery = String(args[0] || '').trim();
+    const channelId = String(args[1] || message.channelId || '').trim();
+    if (!clanQuery) return channel.send('Укажи клан: **/link clan:<название>**');
+    if (!/^[0-9]{10,}$/.test(channelId)) return channel.send('Не удалось определить ID канала. Укажи его вручную: **/link clan:<название> channel_id:<id>**');
+    const found = await fetchClansByName(clanQuery);
+    if (!found.length) return channel.send(`Клан «${escArg(clanQuery)}» не найден на сайте. Сначала создай его на сайте.`);
+    const clan = found[0];
+    await sbService(`clan_channels?channel_id=eq.${channelId}`, 'DELETE');
+    await sbService('clan_channels', 'POST', {
+      name: clan.name,
+      clan_id: clan.id,
+      channel_id: channelId,
+      created_at: new Date().toISOString(),
+    });
+    return channel.send(`✅ Канал <#${channelId}> привязан к клану **${escArg(clan.name)}**. Сюда будут приходить события, задания и чат клана с сайта.`);
   }
 
   if (cmd === 'матч' || cmd === 'match') {
@@ -326,7 +342,10 @@ const SLASH_COMMANDS = [
   { name: 'zone', description: 'Активные задания / зона' },
   { name: 'stats', description: 'Общая статистика площадки' },
   { name: 'tactics', description: 'Галерея тактик' },
-  { name: 'link', description: 'Привязать канал к чату сайта', options: [{ name: 'channel_id', description: 'ID канала Discord', type: 3, required: true }] },
+  { name: 'link', description: 'Привязать этот канал к клану с сайта', options: [
+    { name: 'clan', description: 'Название клана с сайта', type: 3, required: true },
+    { name: 'channel_id', description: 'ID канала (по умолчанию — текущий)', type: 3, required: false },
+  ] },
   { name: 'match', description: 'Начать сбор матча по скриншоту' },
   { name: 'apps', description: 'Заявки в кланы' },
   { name: 'rating', description: 'Топ игроков клана' },
@@ -427,7 +446,7 @@ loadBridgeState();
 async function bridgePoll() {
   const links = await fetchChannelLinks();
   if (!links.length) return;
-  const byChannel = new Map(links.map((l) => [l.channel_id, l.id]));
+  const byChannel = new Map(links.map((l) => [l.channel_id, l]));
   const chanIds = [...byChannel.keys()];
 
   // Сайт → Discord
@@ -444,7 +463,8 @@ async function bridgePoll() {
       if (app.status !== seen) {
         bridgeState.apps[app.id] = app.status;
         if (chanIds.length) {
-          await postToDiscord(chanIds[0], `📋 **Заявка ${app.id}** — ${app.clan_name} (${app.status})`);
+          const link = links.find(l => l.name === app.clan_name) || links[0];
+          await postToDiscord(link.channel_id, `📋 **Заявка ${app.id}** — ${app.clan_name} (${app.status})`);
         }
       }
     }
@@ -453,7 +473,8 @@ async function bridgePoll() {
 
   const messages = await fetchUnpostedSiteMessages(links.map((l) => l.channel_id));
   for (const m of messages) {
-    const chanId = [...byChannel.keys()][0];
+    const link = byChannel.get(m.channel_id) || links[0];
+    const chanId = link && link.channel_id;
     if (!chanId) continue;
     const msg = await postToDiscord(chanId, `[Сайт] ${m.body}`);
     if (msg && msg.id) {
@@ -463,8 +484,7 @@ async function bridgePoll() {
 
   // Дискорд → сайт (сообщения в привязанных каналах → clan_messages)
   if (chanIds.length) {
-    const r = await fetch(`${SB.base}/rest/v1/clan_channels?order=created_at.asc`, { headers: { Accept: 'application/vnd.pgrst.object+json' } }).then((x) => x.json().catch(() => null));
-    const linksArr = r && Array.isArray(r) ? r : [];
+    const linksArr = await sbGet('clan_channels?order=created_at.asc');
     for (const link of linksArr) {
       const r2 = await fetch(`https://discord.com/api/v10/channels/${link.channel_id}/messages?limit=20`, {
         headers: { Authorization: 'Bot ' + config.botToken },
@@ -476,7 +496,7 @@ async function bridgePoll() {
         const body = String(dm.content || '').trim();
         if (!body) continue;
         await sbService('clan_messages', 'POST', {
-          clan_id: null, user_id: null, body, source: 'discord', channel_id: link.channel_id, discord_msg_id: dm.id,
+          clan_id: link.clan_id || null, user_id: null, body, source: 'discord', channel_id: link.channel_id, discord_msg_id: dm.id,
         });
       }
     }

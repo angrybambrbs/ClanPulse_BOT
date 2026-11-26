@@ -53,7 +53,8 @@ async function sbService(path, method = 'POST', body) {
 }
 
 async function fetchClans() {
-  const r = await sbGet('clan_directory?limit=50');
+  // Не clan_directory: этот view фильтрует по auth.uid(), у сервисного ключа его нет.
+  const r = await sbService('clans?select=id,name,tier,about,min_gear_level&limit=50');
   return r && Array.isArray(r) ? r : [];
 }
 
@@ -78,7 +79,7 @@ async function fetchLeaderboardForClan(clanId) {
   return (r || []).filter(x => !clanId || x.clan_id === clanId).slice(0, 50);
 }
 async function fetchClansByName(q) {
-  const r = await sbService('clan_directory?select=id,name,min_gear_level,tier,about&limit=50');
+  const r = await sbService('clans?select=id,name,min_gear_level,tier,about&limit=50');
   const qn = normNick(q);
   return (r || []).filter(x => normNick(x.name).includes(qn));
 }
@@ -86,7 +87,7 @@ async function fetchClanByPlayer(nick) {
   const r = await sbService('players?select=nick,clan_id&limit=500');
   const p = (r || []).find(x => normNick(x.nick).includes(normNick(nick)));
   if (!p || !p.clan_id) return null;
-  const c = await sbService('clan_directory?select=id,name&id=eq.' + p.clan_id);
+  const c = await sbService('clans?select=id,name&id=eq.' + p.clan_id);
   return c && c[0] ? c[0] : null;
 }
 async function fetchEvents() {
@@ -250,7 +251,7 @@ async function handleCommand(cmd, message, args = []) {
     return channel.send({ embeds: [e] });
   }
   if (cmd === 'рейтинг' || cmd === 'rating') {
-    const d = await sbService('clan_directory?limit=5');
+    const d = await sbService('clans?select=id,name&limit=5');
     const clanId = d && d[0] ? d[0].id : null;
     const stats = await fetchLeaderboardForClan(clanId);
     const e = embed({ title: `🏆 Лидеры рейтинга (первый активный клан)`, description: stats.slice(0, 15).map((s, i) => `${i + 1}. **#${s.player_id}** — ${s.kills}K / ${s.deaths}D / ${s.assists}P`).join('\n') || 'Нет данных.' });
@@ -559,8 +560,11 @@ async function finishMatchCollect(message) {
   const st = matchCollect.get(message.author.id) || {};
   matchCollect.delete(message.author.id);
   if (!st.stage && st.result) return message.reply('Нужна хотя бы стадия (1/2/3).');
-  const { data: clan } = await sbService('clan_directory?select=id&order=members.notnull.desc&limit=1');
-  if (!clan || !clan.id) return message.reply('Клан не найден — создайте клан на сайте.');
+  const members = await sbService('clan_members?select=clan_id&limit=1');
+  const fallback = await sbService('clans?select=id&limit=1');
+  const clanId = (members && members[0] && members[0].clan_id) || (fallback && fallback[0] && fallback[0].id);
+  if (!clanId) return message.reply('Клан не найден — создайте клан на сайте.');
+  const clan = { id: clanId };
   let parsed = null;
   const row = {
     clan_id: clan.id,

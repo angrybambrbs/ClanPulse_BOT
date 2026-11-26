@@ -32,6 +32,7 @@ http.createServer((req, res) => {
       live: live ? {
         ready: live.isReady(),
         botTag: live.user ? live.user.tag : null,
+        appId: live.application ? live.application.id : null,
         guilds: live.guilds.cache.map(g => ({ id: g.id, name: g.name })),
       } : null,
     }, null, 2);
@@ -426,7 +427,7 @@ const SLASH_MAP = {
 let registrationState = null;
 async function registerSlashCommands() {
   if (!client.application) return;
-  const result = { at: new Date().toISOString(), global: null, guilds: {}, error: null };
+  const result = { at: new Date().toISOString(), global: null, guilds: {}, error: null, names: SLASH_COMMANDS.map(c => c.name) };
   try {
     const globalCmds = await client.application.commands.set(SLASH_COMMANDS);
     result.global = globalCmds.size;
@@ -501,6 +502,9 @@ client.on('clientReady', async () => {
   runtimeStatus.botTag = client.user.tag;
   runtimeStatus.guilds = client.guilds.cache.map(g => ({ id: g.id, name: g.name }));
   console.log('Серверы бота:', runtimeStatus.guilds.map(g => `${g.name} (${g.id})`).join(', ') || 'бот не добавлен ни на один сервер');
+  if (!client.guilds.cache.size) {
+    console.log('Пригласите бота: https://discord.com/oauth2/authorize?client_id=' + (client.application && client.application.id) + '&permissions=248832&scope=bot%20applications.commands');
+  }
   await registerSlashCommands();
 
   // Рассылка активных заданий раз в 6 часов

@@ -166,8 +166,16 @@ async function fetchLeaderboardForClan(clanId) {
   return (r || []).filter(x => !clanId || x.clan_id === clanId).slice(0, 50);
 }
 async function fetchClansByName(q) {
-  const qn = normNick(q);
-  if (!qn) return [];
+  const needle = String(q || '').trim();
+  if (!needle) return [];
+  const qn = normNick(needle);
+  const pattern = `*${encodeURIComponent(needle)}*`;
+  const found = new Map();
+  for (const table of ['clans', 'clan_directory']) {
+    const r = await sbService(`${table}?select=*&name=ilike.${pattern}&limit=20`);
+    if (Array.isArray(r)) for (const c of r) if (c && c.id && c.name) found.set(c.id, c);
+  }
+  if (found.size) return [...found.values()];
   const all = await fetchClans();
   return all.filter(x => normNick(x.name).includes(qn));
 }

@@ -771,8 +771,13 @@ async function bridgePoll() {
         const body = String(dm.content || '').trim();
         if (!body) continue;
         console.log('Bridge: discord->site insert', { clan: link.clan_id, channel: link.channel_id, msgId: dm.id, body });
+        let userId = null;
+        try {
+          const pl = await sbGet(`players?select=user_id&discord_id=eq.${dm.author.id}&limit=1`);
+          if (Array.isArray(pl) && pl.length && pl[0].user_id) userId = pl[0].user_id;
+        } catch (e) { console.log('Bridge: user lookup failed', dm.author.id, e.message); }
         await sbService('clan_messages', 'POST', {
-          clan_id: link.clan_id || null, user_id: null, body, source: 'discord', channel_id: link.channel_id, discord_msg_id: dm.id,
+          clan_id: link.clan_id || null, user_id: userId, body, source: 'discord', channel_id: link.channel_id, discord_msg_id: dm.id,
         });
       }
     }

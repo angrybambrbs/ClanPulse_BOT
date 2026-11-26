@@ -31,10 +31,13 @@ http.createServer(async (req, res) => {
       const rows = await sbService('clans?select=id,name&limit=200');
       clans = Array.isArray(rows) ? rows.map(c => ({ id: c.id, name: c.name })) : rows;
     } catch (e) { clans = { error: e.message }; }
+    let bindings = null;
+    try { bindings = (await fetchChannelLinks()).map(l => ({ channel_id: l.channel_id, clan: l.clanName, kind: l.kind })); } catch (e) { bindings = { error: e.message }; }
     const body = JSON.stringify({
       ...runtimeStatus,
       uptimeSec: Math.round((Date.now() - STARTED_AT) / 1000),
       clans,
+      bindings,
       live: live ? {
         ready: live.isReady(),
         botTag: live.user ? live.user.tag : null,
@@ -210,10 +213,11 @@ async function gatherStats() {
   saveBridgeState();
 }
 async function statDigest() {
-  const ch = await fetchChannelLinks();
-  if (!ch.length) return;
+  const all = await fetchChannelLinks();
+  const target = all.find(l => l.kind === 'events') || all.find(l => l.kind === 'chat');
+  if (!target) return;
   const msg = `📊 **Статистика на этой неделе**\n- Матчей собрано: ${statState.matches}\n- Не распознано скриншотов: ${statState.parseFail}`;
-  await postToDiscord(ch[0].channel_id, msg);
+  await postToDiscord(target.channel_id, msg);
   statState.matches = 0; statState.parseFail = 0;
 }
 // ── Block B: разбор нераспознанных скриншотов ──
@@ -221,18 +225,22 @@ async function repostUnrecognizedDigest() {
   const ms = await sbService('matches?select=id,played_at,clan_id,extra&order=played_at.desc&limit=30');
   const rows = (ms || []).filter(m => !m || !m.extra || m.extra.source !== 'recognized');
   if (!rows.length) return;
-  const ch = await fetchChannelLinks();
-  if (!ch.length) return;
+  const all = await fetchChannelLinks();
+  const target = all.find(l => l.kind === 'events') || all.find(l => l.kind === 'chat');
+  if (!target) return;
   const lines = rows.slice(0, 8).map(m => `- ${new Date(m.played_at).toLocaleDateString('ru')} — матч \`${m.id}\``).join('\n');
-  await postToDiscord(ch[0].channel_id, `🔍 **Матчи без статистики**\n${lines}`);
+  await postToDiscord(target.channel_id, `🔍 **Матчи без статистики**\n${lines}`);
 }
 async function postEventsDigest() {
-  const links = await fetchChannelLinks();
+  const all = await fetchChannelLinks();
+  const events = all.filter(l => l.kind === 'events');
+  // Пока не создана привязка событий — шлём в чат, чтобы не потерять рассылки.
+  const links = events.length ? events : all.filter(l => l.kind === 'chat');
   if (!links.length) return;
   for (const link of links) {
     const games = await fetchActiveGamesService(link.clan_id);
     if (!games.length) continue;
-    const title = '⚡ ClanPulse — события' + (link.name ? ` · ${link.name}` : '');
+    const title = '⚡ ClanPulse — события' + (link.clanName ? ` · ${link.clanName}` : '');
     const e = embed({ title, description: games.slice(0, 10).map((t) => `- **${t.title}** (${new Date(t.starts_at).toLocaleString('ru')})`).join('\n') });
     await postToDiscord(link.channel_id, e).catch(() => null);
   }
@@ -242,9 +250,17 @@ async function fetchStats() {
   const r = await sbGet('rpc/site_stats');
   return r && typeof r === 'object' ? r : null;
 }
+// В clan_channels тип привязки хранится в префиксе name: "chat::" или "events::".
+// Старые строки без префикса считаются чатом (обратная совместимость).
+function parseChannelLink(row) {
+  const raw = String(row.name || '');
+  const m = raw.match(/^(chat|events)::([\s\S]*)$/);
+  if (m) return { ...row, kind: m[1], clanName: m[2] };
+  return { ...row, kind: 'chat', clanName: raw };
+}
 async function fetchChannelLinks() {
-  const r = await sbGet('clan_channels?order=created_at.asc');
-  return r && Array.isArray(r) ? r : [];
+  const r = await sbGet('clan_channels?select=id,clan_id,channel_id,name,created_at&order=created_at.asc');
+  return (Array.isArray(r) ? r : []).map(parseChannelLink);
 }
 async function fetchUnpostedSiteMessages(channelIds) {
   if (!channelIds.length) return [];
@@ -341,42 +357,60 @@ async function handleCommand(cmd, message, args = []) {
       '- 📋 **/zone** — активные задания\n' +
       '- 📈 **/stats** — общая статистика\n' +
       '- 🗺 **/tactics** — галерея планов\n' +
-      '- 🔗 **/link clan:<название>** — привязать этот канал к клану с сайта\n' +
-      '- ✂️ **/unlink** — отвязать этот канал от клана\n' +
+      '- 🔗 **/link clan:<название> type:<Чат|События>** — привязать канал\n' +
+      '- ✂️ **/unlink type:<Чат|События>** — отвязать канал\n' +
       '- ℹ️ **/help** — справка'
     );
   }
 
   if (cmd === 'чат' || cmd === 'link') {
     const clanQuery = String(args[0] || '').trim();
-    const channelId = String(args[1] || message.channelId || '').trim();
-    if (!clanQuery) return channel.send('Укажи клан: **/link clan:<название>**');
-    if (!/^[0-9]{10,}$/.test(channelId)) return channel.send('Не удалось определить ID канала. Укажи его вручную: **/link clan:<название> channel_id:<id>**');
+    let kind = 'chat';
+    let channelId;
+    if (args[1] === 'chat' || args[1] === 'events') {
+      kind = args[1];
+      channelId = String(args[2] || message.channelId || '').trim();
+    } else {
+      channelId = String(args[1] || message.channelId || '').trim();
+    }
+    const label = kind === 'events' ? 'события и задания' : 'чат клана';
+    if (!clanQuery) return channel.send('Укажи клан: **/link clan:<название> type:<Чат|События>**');
+    if (!/^[0-9]{10,}$/.test(channelId)) return channel.send(`Не удалось определить ID канала. Укажи его вручную: **/link clan:<название> type:${kind} channel_id:<id>**`);
     const found = await fetchClansByName(clanQuery);
     if (!found.length) return channel.send(`Клан «${escArg(clanQuery)}» не найден на сайте. Сначала создай его на сайте.`);
     const clan = found[0];
-    await sbService(`clan_channels?channel_id=eq.${channelId}`, 'DELETE');
+    const existing = await fetchChannelLinks();
+    for (const l of existing.filter(l => l.channel_id === channelId && l.kind === kind)) {
+      await sbService(`clan_channels?id=eq.${l.id}`, 'DELETE');
+    }
     await sbService('clan_channels', 'POST', {
-      name: clan.name,
+      name: `${kind}::${clan.name}`,
       clan_id: clan.id,
       channel_id: channelId,
       created_at: new Date().toISOString(),
     });
-    return channel.send(`✅ Канал <#${channelId}> привязан к клану **${escArg(clan.name)}**. Сюда будут приходить события, задания и чат клана с сайта.`);
+    return channel.send(`✅ Канал <#${channelId}> привязан к клану **${escArg(clan.name)}** для **${label}**.`);
   }
 
   if (cmd === 'отвязать' || cmd === 'unlink') {
-    const channelId = String(args[0] || message.channelId || '').trim();
-    if (!/^[0-9]{10,}$/.test(channelId)) return channel.send('Не удалось определить ID канала. Укажи его вручную: **/unlink channel_id:<id>**');
-    const before = await sbService(`clan_channels?channel_id=eq.${channelId}&select=id,clan_id,name`);
-    if (!Array.isArray(before)) return channel.send('❌ Не удалось прочитать привязки канала. Проверь Supabase.');
-    if (!before.length) return channel.send(`Канал <#${channelId}> и так не привязан ни к одному клану.`);
-    await sbService(`clan_channels?channel_id=eq.${channelId}`, 'DELETE');
-    const after = await sbService(`clan_channels?channel_id=eq.${channelId}&select=id`);
-    if (!Array.isArray(after)) return channel.send('❌ Не удалось проверить отвязку. Проверь Supabase.');
-    if (after.length) return channel.send('❌ Канал всё ещё привязан — попробуй ещё раз.');
-    const names = [...new Set(before.map(x => x.name).filter(Boolean))];
-    return channel.send(`✅ Канал <#${channelId}> отвязан${names.length ? ' от клана **' + names.join(', ') + '**' : ''}.`);
+    let kind = 'chat';
+    let channelId;
+    if (args[0] === 'chat' || args[0] === 'events') {
+      kind = args[0];
+      channelId = String(args[1] || message.channelId || '').trim();
+    } else {
+      channelId = String(args[0] || message.channelId || '').trim();
+    }
+    const label = kind === 'events' ? 'событий и заданий' : 'чата';
+    if (!/^[0-9]{10,}$/.test(channelId)) return channel.send(`Не удалось определить ID канала. Укажи его вручную: **/unlink type:${kind} channel_id:<id>**`);
+    const links = await fetchChannelLinks();
+    const target = links.filter(l => l.channel_id === channelId && l.kind === kind);
+    if (!target.length) return channel.send(`Канал <#${channelId}> не привязан к ${label} ни одного клана.`);
+    for (const l of target) await sbService(`clan_channels?id=eq.${l.id}`, 'DELETE');
+    const after = await fetchChannelLinks();
+    if (after.some(l => l.channel_id === channelId && l.kind === kind)) return channel.send('❌ Не удалось отвязать — попробуй ещё раз.');
+    const names = [...new Set(target.map(l => l.clanName).filter(Boolean))];
+    return channel.send(`✅ Канал <#${channelId}> отвязан от ${label}${names.length ? ' клана **' + names.join(', ') + '**' : ''}.`);
   }
 
   if (cmd === 'матч' || cmd === 'match') {
@@ -476,7 +510,7 @@ function escArg(s) {
   return r.slice(0, 200);
 }
 
-return channel.send(`Неизвестная команда: \`${cmd}\`. Напишите \`!help\`.`);
+return channel.send(`Неизвестная команда: \`${cmd}\`. Напишите \`/help\`.`);
 }
 
 const client = new Client({ intents: [
@@ -493,11 +527,19 @@ const SLASH_COMMANDS = [
   { name: 'zone', description: 'Активные задания / зона' },
   { name: 'stats', description: 'Общая статистика площадки' },
   { name: 'tactics', description: 'Галерея тактик' },
-  { name: 'link', description: 'Привязать этот канал к клану с сайта', options: [
+  { name: 'link', description: 'Привязать канал к клану', options: [
     { name: 'clan', description: 'Название клана с сайта', type: 3, required: true },
+    { name: 'type', description: 'Что привязываем (по умолчанию — чат)', type: 3, required: false, choices: [
+      { name: 'Чат клана', value: 'chat' },
+      { name: 'События и задания', value: 'events' },
+    ] },
     { name: 'channel_id', description: 'ID канала (по умолчанию — текущий)', type: 3, required: false },
   ] },
   { name: 'unlink', description: 'Отвязать канал от клана', options: [
+    { name: 'type', description: 'Что отвязываем (по умолчанию — чат)', type: 3, required: false, choices: [
+      { name: 'Чат клана', value: 'chat' },
+      { name: 'События и задания', value: 'events' },
+    ] },
     { name: 'channel_id', description: 'ID канала (по умолчанию — текущий)', type: 3, required: false },
   ] },
   { name: 'match', description: 'Начать сбор матча по скриншоту' },
@@ -650,7 +692,8 @@ function saveBridgeState() {
 loadBridgeState();
 
 async function bridgePoll() {
-  const links = await fetchChannelLinks();
+  // Чатовый мост работает только с привязками чата; события ходят отдельно.
+  const links = (await fetchChannelLinks()).filter(l => l.kind === 'chat');
   if (!links.length) return;
   const byChannel = new Map(links.map((l) => [l.channel_id, l]));
   const chanIds = [...byChannel.keys()];
@@ -669,7 +712,7 @@ async function bridgePoll() {
       if (app.status !== seen) {
         bridgeState.apps[app.id] = app.status;
         if (chanIds.length) {
-          const link = links.find(l => l.name === app.clan_name) || links[0];
+          const link = links.find(l => l.clanName === app.clan_name) || links[0];
           await postToDiscord(link.channel_id, `📋 **Заявка ${app.id}** — ${app.clan_name} (${app.status})`);
         }
       }
@@ -690,7 +733,7 @@ async function bridgePoll() {
 
   // Дискорд → сайт (сообщения в привязанных каналах → clan_messages)
   if (chanIds.length) {
-    const linksArr = await sbGet('clan_channels?order=created_at.asc');
+    const linksArr = (await fetchChannelLinks()).filter(l => l.kind === 'chat');
     for (const link of linksArr) {
       const r2 = await fetch(`https://discord.com/api/v10/channels/${link.channel_id}/messages?limit=20`, {
         headers: { Authorization: 'Bot ' + config.botToken },

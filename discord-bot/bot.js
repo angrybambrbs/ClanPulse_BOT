@@ -69,6 +69,7 @@ function serviceKey() {
     .trim()
     .replace(/^Bearer\s+/i, '')
     .replace(/^['"]|['"]$/g, '')
+    .replace(/\s+/g, '')
     .trim();
 }
 

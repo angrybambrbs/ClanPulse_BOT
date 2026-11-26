@@ -64,8 +64,16 @@ async function sbGet(path) {
   return sbService(path, 'GET');
 }
 
+function serviceKey() {
+  return String(process.env.SUPABASE_SERVICE_ROLE || '')
+    .trim()
+    .replace(/^Bearer\s+/i, '')
+    .replace(/^['"]|['"]$/g, '')
+    .trim();
+}
+
 async function sbService(path, method = 'POST', body) {
-  const key = process.env.SUPABASE_SERVICE_ROLE;
+  const key = serviceKey();
   const opts = { method, headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(10000) };
   if (key) opts.headers.Authorization = 'Bearer ' + key;
   if (body) opts.body = JSON.stringify(body);
@@ -76,6 +84,36 @@ async function sbService(path, method = 'POST', body) {
   } catch (e) {
     console.error('Supabase request failed', path, e.message);
     return null;
+  }
+}
+
+// Безопасное описание ключа: без самого значения, только тип/роль/проект.
+function describeKey(key) {
+  if (!key) return { present: false, kind: 'НЕ задан' };
+  const info = { present: true, kind: 'unknown', length: key.length };
+  if (key.startsWith('sb_secret_')) info.kind = 'sb_secret (secret key)';
+  else if (key.startsWith('sb_publishable_')) info.kind = 'sb_publishable (ПУБЛИЧНЫЙ ключ, не service role)';
+  else if (key.startsWith('eyJ')) {
+    info.kind = 'jwt';
+    try {
+      const payload = JSON.parse(Buffer.from(key.split('.')[1], 'base64url').toString('utf8'));
+      info.role = payload.role;
+      info.ref = payload.ref;
+      info.exp = payload.exp ? new Date(payload.exp * 1000).toISOString().slice(0, 10) : null;
+    } catch { info.kind = 'jwt (не удалось разобрать)'; }
+  }
+  return info;
+}
+
+async function sbProbe(path) {
+  const key = serviceKey();
+  const opts = { method: 'GET', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(10000) };
+  if (key) opts.headers.Authorization = 'Bearer ' + key;
+  try {
+    const r = await fetch(SB.base + '/rest/v1/' + path, opts);
+    return { status: r.status, body: (await r.text()).slice(0, 240) };
+  } catch (e) {
+    return { status: 0, body: e.message.slice(0, 240) };
   }
 }
 
@@ -198,16 +236,23 @@ async function handleCommand(cmd, message, args = []) {
   const channel = message.channel;
 
   if (cmd === 'debug') {
-    const fmt = (r) => Array.isArray(r) ? `строк: ${r.length}${r[0] ? ` · первый: ${JSON.stringify(r[0]).slice(0, 160)}` : ''}` : JSON.stringify(r).slice(0, 200);
-    const clans = await sbService('clans?select=id,name&limit=5');
-    const members = await sbService('clan_members?select=clan_id&limit=1');
-    const dir = await sbService('clan_directory?select=id&limit=5');
+    const key = describeKey(serviceKey());
+    const urlRef = (() => { try { return new URL(SB.base).hostname.split('.')[0]; } catch { return '?'; } })();
+    const probe = async (p) => { const r = await sbProbe(p); return `${r.status} ${r.body}`; };
+    const clans = await probe('clans?select=id,name&limit=1');
+    const members = await probe('clan_members?select=clan_id&limit=1');
+    const dir = await probe('clan_directory?select=id&limit=1');
     return channel.send(
       '🔧 **Диагностика Supabase**\n' +
-      `- SERVICE_ROLE: ${process.env.SUPABASE_SERVICE_ROLE ? 'задан' : 'НЕ задан'}\n` +
-      `- clans: ${fmt(clans)}\n` +
-      `- clan_members: ${fmt(members)}\n` +
-      `- clan_directory: ${fmt(dir)}`
+      `- URL: ${SB.base} (ref ${urlRef})\n` +
+      `- SERVICE_ROLE: ${key.present ? 'задан' : 'НЕ задан'} · ${key.kind}` +
+        (key.role ? ` · role=${key.role}` : '') +
+        (key.ref ? ` · ref=${key.ref}` : '') +
+        (key.exp ? ` · exp=${key.exp}` : '') +
+        (key.length ? ` · длина=${key.length}` : '') + '\n' +
+      `- clans: ${clans}\n` +
+      `- clan_members: ${members}\n` +
+      `- clan_directory: ${dir}`
     );
   }
 

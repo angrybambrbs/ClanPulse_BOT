@@ -317,8 +317,61 @@ return channel.send(`Неизвестная команда: \`${cmd}\`. Напи
 const client = new Client({ intents: [
   GatewayIntentBits.Guilds,
   GatewayIntentBits.GuildMessages,
-  GatewayIntentBits.MessageContent,
 ] });
+
+// Slash-команды не требуют привилегированного Message Content Intent.
+const SLASH_COMMANDS = [
+  { name: 'help', description: 'Справка по командам' },
+  { name: 'clans', description: 'Список кланов' },
+  { name: 'zone', description: 'Активные задания / зона' },
+  { name: 'stats', description: 'Общая статистика площадки' },
+  { name: 'tactics', description: 'Галерея тактик' },
+  { name: 'link', description: 'Привязать канал к чату сайта', options: [{ name: 'channel_id', description: 'ID канала Discord', type: 3, required: true }] },
+  { name: 'match', description: 'Начать сбор матча по скриншоту' },
+  { name: 'apps', description: 'Заявки в кланы' },
+  { name: 'rating', description: 'Топ игроков клана' },
+  { name: 'search', description: 'Поиск клана', options: [{ name: 'query', description: 'Название клана', type: 3, required: true }] },
+  { name: 'contact', description: 'Найти клан по нику игрока', options: [{ name: 'nick', description: 'Ник игрока', type: 3, required: true }] },
+  { name: 'unconfirmed', description: 'Матчи без подтверждённой статистики' },
+  { name: 'fix', description: 'Исправить результат матча', options: [
+    { name: 'match_id', description: 'ID матча', type: 3, required: true },
+    { name: 'result', description: 'победа / проигрыш / ничья', type: 3, required: true },
+  ] },
+  { name: 'week', description: 'Статистика недели' },
+  { name: 'events', description: 'События кланов' },
+  { name: 'matches', description: 'Таблица матчей' },
+  { name: 'profile', description: 'Профиль клана', options: [{ name: 'clan', description: 'Название клана', type: 3, required: true }] },
+  { name: 'decide', description: 'Принять или отклонить заявку', options: [
+    { name: 'app_id', description: 'ID заявки', type: 3, required: true },
+    { name: 'accept', description: 'true = принять, false = отклонить', type: 5, required: true },
+  ] },
+];
+const SLASH_MAP = {
+  help: 'help', clans: 'кланы', zone: 'зона', stats: 'стат', tactics: 'тактики',
+  link: 'чат', match: 'матч', apps: 'заявки', rating: 'рейтинг', search: 'поиск',
+  contact: 'контакт', unconfirmed: 'неподтверждено', fix: 'править', week: 'статистика',
+  events: 'события', matches: 'таблицы', profile: 'профиль',
+};
+client.on('interactionCreate', async interaction => {
+  if (!interaction.isChatInputCommand()) return;
+  const name = interaction.commandName;
+  const cmd = name === 'decide' ? (interaction.options.getBoolean('accept') ? 'принять' : 'отклонить') : (SLASH_MAP[name] || name);
+  const args = [];
+  for (const o of interaction.options.data) {
+    if (o.name === 'accept') continue;
+    args.push(String(o.value));
+  }
+  const fake = {
+    channel: { send: async payload => interaction.replied || interaction.deferred ? interaction.followUp(payload) : interaction.reply(payload) },
+    author: { id: interaction.user.id },
+    channelId: interaction.channelId,
+  };
+  try { await handleCommand(cmd, fake, args); }
+  catch (e) {
+    const text = '❌ ' + e.message;
+    if (interaction.replied || interaction.deferred) await interaction.followUp(text); else await interaction.reply(text);
+  }
+});
 
 // ── Автосбор статистики матчей (турнир-стадия) ──────────────────────────
 // Команда: !матч → бот ожидает скриншот → бот спрашивает стадию (1/2/3) и результат → создаёт матч на сайте.
@@ -328,8 +381,10 @@ const dumpCmdHelper = async (cmd, args, message) => {
 };
 client.on('messageUpdate', async () => {});
 
-client.on('ready', () => {
+client.on('clientReady', async () => {
   console.log('Бот ' + client.user.tag + ' готов');
+  try { await client.application.commands.set(SLASH_COMMANDS); console.log('Slash-команды зарегистрированы'); }
+  catch (e) { console.error('Slash-команды не зарегистрированы:', e.message); }
 
   // Рассылка активных заданий раз в 6 часов
   setInterval(async () => {

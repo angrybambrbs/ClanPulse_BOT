@@ -20,15 +20,21 @@ let clientRef = null;
 
 // Render Web Service требует HTTP-сервер, который отвечает на health check '/'.
 const PORT = Number(process.env.PORT) || 10000;
-http.createServer((req, res) => {
+http.createServer(async (req, res) => {
   if (req.url === '/' || req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('ok');
   } else if (req.url === '/status') {
     const live = clientRef;
+    let clans = null;
+    try {
+      const rows = await sbService('clans?select=id,name&limit=200');
+      clans = Array.isArray(rows) ? rows.map(c => ({ id: c.id, name: c.name })) : rows;
+    } catch (e) { clans = { error: e.message }; }
     const body = JSON.stringify({
       ...runtimeStatus,
       uptimeSec: Math.round((Date.now() - STARTED_AT) / 1000),
+      clans,
       live: live ? {
         ready: live.isReady(),
         botTag: live.user ? live.user.tag : null,

@@ -342,6 +342,7 @@ async function handleCommand(cmd, message, args = []) {
       '- 📈 **/stats** — общая статистика\n' +
       '- 🗺 **/tactics** — галерея планов\n' +
       '- 🔗 **/link clan:<название>** — привязать этот канал к клану с сайта\n' +
+      '- ✂️ **/unlink** — отвязать этот канал от клана\n' +
       '- ℹ️ **/help** — справка'
     );
   }
@@ -362,6 +363,20 @@ async function handleCommand(cmd, message, args = []) {
       created_at: new Date().toISOString(),
     });
     return channel.send(`✅ Канал <#${channelId}> привязан к клану **${escArg(clan.name)}**. Сюда будут приходить события, задания и чат клана с сайта.`);
+  }
+
+  if (cmd === 'отвязать' || cmd === 'unlink') {
+    const channelId = String(args[0] || message.channelId || '').trim();
+    if (!/^[0-9]{10,}$/.test(channelId)) return channel.send('Не удалось определить ID канала. Укажи его вручную: **/unlink channel_id:<id>**');
+    const before = await sbService(`clan_channels?channel_id=eq.${channelId}&select=id,clan_id,name`);
+    if (!Array.isArray(before)) return channel.send('❌ Не удалось прочитать привязки канала. Проверь Supabase.');
+    if (!before.length) return channel.send(`Канал <#${channelId}> и так не привязан ни к одному клану.`);
+    await sbService(`clan_channels?channel_id=eq.${channelId}`, 'DELETE');
+    const after = await sbService(`clan_channels?channel_id=eq.${channelId}&select=id`);
+    if (!Array.isArray(after)) return channel.send('❌ Не удалось проверить отвязку. Проверь Supabase.');
+    if (after.length) return channel.send('❌ Канал всё ещё привязан — попробуй ещё раз.');
+    const names = [...new Set(before.map(x => x.name).filter(Boolean))];
+    return channel.send(`✅ Канал <#${channelId}> отвязан${names.length ? ' от клана **' + names.join(', ') + '**' : ''}.`);
   }
 
   if (cmd === 'матч' || cmd === 'match') {
@@ -482,6 +497,9 @@ const SLASH_COMMANDS = [
     { name: 'clan', description: 'Название клана с сайта', type: 3, required: true },
     { name: 'channel_id', description: 'ID канала (по умолчанию — текущий)', type: 3, required: false },
   ] },
+  { name: 'unlink', description: 'Отвязать канал от клана', options: [
+    { name: 'channel_id', description: 'ID канала (по умолчанию — текущий)', type: 3, required: false },
+  ] },
   { name: 'match', description: 'Начать сбор матча по скриншоту' },
   { name: 'apps', description: 'Заявки в кланы' },
   { name: 'rating', description: 'Топ игроков клана' },
@@ -503,7 +521,7 @@ const SLASH_COMMANDS = [
 ];
 const SLASH_MAP = {
   help: 'help', debug: 'debug', clans: 'кланы', zone: 'зона', stats: 'стат', tactics: 'тактики',
-  link: 'чат', match: 'матч', apps: 'заявки', rating: 'рейтинг', search: 'поиск',
+  link: 'чат', unlink: 'отвязать', match: 'матч', apps: 'заявки', rating: 'рейтинг', search: 'поиск',
   contact: 'контакт', unconfirmed: 'неподтверждено', fix: 'править', week: 'статистика',
   events: 'события', matches: 'таблицы', profile: 'профиль',
 };

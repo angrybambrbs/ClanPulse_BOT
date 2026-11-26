@@ -2,7 +2,20 @@
 // Команды: !кланы, !зона, !стат, !тактики, !help
 // Данные берутся из Supabase напрямую по REST (публичные view/RPC — без ключей).
 
+const http = require('http');
 const { Client, GatewayIntentBits, EmbedBuilder, TextChannel } = require('discord.js');
+
+// Render Web Service требует HTTP-сервер, который отвечает на health check '/'.
+const PORT = Number(process.env.PORT) || 10000;
+http.createServer((req, res) => {
+  if (req.url === '/' || req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('ok');
+  } else {
+    res.writeHead(404);
+    res.end('not found');
+  }
+}).listen(PORT, '0.0.0.0', () => console.log(`Health server listening on ${PORT}`));
 
 const config = {
   botToken: process.env.BOT_TOKEN,
@@ -552,4 +565,8 @@ client.on('messageCreate', async (message) => {
   }
 });
 
-client.login(config.botToken);
+if (!config.botToken) {
+  console.error('BOT_TOKEN is not set — Discord login skipped; health server is still up.');
+} else {
+  client.login(config.botToken).catch(e => console.error('Discord login failed:', e.message));
+}

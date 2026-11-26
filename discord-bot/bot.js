@@ -76,7 +76,10 @@ function serviceKey() {
 async function sbService(path, method = 'POST', body) {
   const key = serviceKey();
   const opts = { method, headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(10000) };
-  if (key) opts.headers.Authorization = 'Bearer ' + key;
+  if (key) {
+    opts.headers.apikey = key;
+    opts.headers.Authorization = 'Bearer ' + key;
+  }
   if (body) opts.body = JSON.stringify(body);
   try {
     const r = await fetch(SB.base + '/rest/v1/' + path, opts);
@@ -109,7 +112,10 @@ function describeKey(key) {
 async function sbProbe(path) {
   const key = serviceKey();
   const opts = { method: 'GET', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(10000) };
-  if (key) opts.headers.Authorization = 'Bearer ' + key;
+  if (key) {
+    opts.headers.apikey = key;
+    opts.headers.Authorization = 'Bearer ' + key;
+  }
   try {
     const r = await fetch(SB.base + '/rest/v1/' + path, opts);
     return { status: r.status, body: (await r.text()).slice(0, 240) };

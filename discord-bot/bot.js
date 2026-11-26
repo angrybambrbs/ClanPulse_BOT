@@ -298,19 +298,31 @@ async function handleCommand(cmd, message, args = []) {
     const allClans = await fetchClans();
     const names = allClans.map(c => c.name).filter(Boolean);
     const namesLine = names.length ? `${names.length}: ${names.join(', ').slice(0, 700)}` : '0';
-    return channel.send(
-      '🔧 **Диагностика Supabase**\n' +
-      `- URL: ${SB.base} (ref ${urlRef})\n` +
-      `- SERVICE_ROLE: ${key.present ? 'задан' : 'НЕ задан'} · ${key.kind}` +
-        (key.role ? ` · role=${key.role}` : '') +
-        (key.ref ? ` · ref=${key.ref}` : '') +
-        (key.exp ? ` · exp=${key.exp}` : '') +
-        (key.length ? ` · длина=${key.length}` : '') + '\n' +
-      `- Кланы: ${namesLine}\n` +
-      `- clans: ${clans}\n` +
-      `- clan_members: ${members}\n` +
-      `- clan_directory: ${dir}`
-    );
+    const perms = [...client.guilds.cache.values()].map(g => `${g.name}: ${g.members && g.members.me && g.members.permissions ? g.members.permissions.bitfield.toString(2) : 'n/a'}`).join(', ');
+    const chatLinks = (await fetchChannelLinks()).filter(l => l.kind === 'chat');
+    const chatLines = chatLinks.map(l => `канал ${l.channel_id} · клан ${l.clanName || l.clan_id} · kind=${l.kind}`);
+    for (const l of chatLinks) {
+      const rr = await fetch(`https://discord.com/api/v10/channels/${l.channel_id}/messages?limit=5`, { headers: { Authorization: 'Bot ' + process.env.BOT_TOKEN } });
+      const ll = await rr.json().catch(() => []);
+      if (Array.isArray(ll)) for (const m of ll.filter(m => m.author && !m.author.bot).slice(0, 5)) chatLines.push(`  [Discord ${m.id}] ${String(m.content || '')}`);
+    }
+    const pending = await fetchUnpostedSiteMessages(chatLinks.map(l => l.channel_id));
+    const pendingLines = pending.map(p => `  [Сайт ${p.id}] ${String(p.body || '').slice(0, 120)}`);
+    const debugText = [
+      '🔧 **Диагностика Supabase**',
+      `- URL: ${SB.base} (ref ${urlRef})`,
+      `- SERVICE_ROLE: ${key.present ? 'задан' : 'НЕ задан'} · ${key.kind}`,
+      (key.role ? ` · role=${key.role}` : '') + (key.ref ? ` · ref=${key.ref}` : '') + (key.exp ? ` · exp=${key.exp}` : '') + (key.length ? ` · длина=${key.length}` : ''),
+      `- Кланы: ${namesLine}`,
+      `- clans: ${clans}`,
+      `- clan_members: ${members}`,
+      `- clan_directory: ${dir}`,
+      `- Bot perms: ${perms}`,
+      `- Привязки чата:\n${chatLines.map(x => `- ${x}`).join('\n')}`,
+      `- Последние Discord-сообщения в чатах:\n${chatLines.filter(x => x.startsWith('  [Discord')).join('\n') || '- (нет)'}`,
+      `- Ожидают отправки в Discord: ${pendingLines.join('\n') || '- (нет)'}`,
+    ].join('\n');
+    return channel.send(String(debugText).slice(0, 1800));
   }
 
   if (cmd === 'кланы' || cmd === 'clans') {
@@ -721,6 +733,7 @@ async function bridgePoll() {
   }
 
   const messages = await fetchUnpostedSiteMessages(links.map((l) => l.channel_id));
+  console.log('Bridge: site->discord poll, pending', messages.length, messages.map((m) => `${m.id}:${m.body}`).join(' | ').slice(0, 300));
   for (const m of messages) {
     const link = byChannel.get(m.channel_id) || links[0];
     const chanId = link && link.channel_id;
@@ -744,6 +757,7 @@ async function bridgePoll() {
         if (!dm.author || dm.author.bot) continue;
         const body = String(dm.content || '').trim();
         if (!body) continue;
+        console.log('Bridge: discord->site insert', { clan: link.clan_id, channel: link.channel_id, msgId: dm.id, body });
         await sbService('clan_messages', 'POST', {
           clan_id: link.clan_id || null, user_id: null, body, source: 'discord', channel_id: link.channel_id, discord_msg_id: dm.id,
         });

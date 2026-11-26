@@ -300,11 +300,15 @@ async function handleCommand(cmd, message, args = []) {
     const namesLine = names.length ? `${names.length}: ${names.join(', ').slice(0, 700)}` : '0';
     const perms = [...client.guilds.cache.values()].map(g => `${g.name}: ${g.members && g.members.me && g.members.permissions ? g.members.permissions.bitfield.toString(2) : 'n/a'}`).join(', ');
     const chatLinks = (await fetchChannelLinks()).filter(l => l.kind === 'chat');
-    const chatLines = chatLinks.map(l => `канал ${l.channel_id} · клан ${l.clanName || l.clan_id} · kind=${l.kind}`);
+    const chatLines = [];
     for (const l of chatLinks) {
+      chatLines.push(`канал ${l.channel_id} · клан ${l.clanName || l.clan_id} · kind=${l.kind}`);
       const rr = await fetch(`https://discord.com/api/v10/channels/${l.channel_id}/messages?limit=5`, { headers: { Authorization: 'Bot ' + process.env.BOT_TOKEN } });
-      const ll = await rr.json().catch(() => []);
-      if (Array.isArray(ll)) for (const m of ll.filter(m => m.author && !m.author.bot).slice(0, 5)) chatLines.push(`  [Discord ${m.id}] ${String(m.content || '')}`);
+      chatLines.push(`  [Discord fetch ${l.channel_id}] status=${rr.status}`);
+      const ll = await rr.json().catch(() => null);
+      if (Array.isArray(ll)) {
+        for (const m of ll.filter(m => m.author && !m.author.bot).slice(0, 5)) chatLines.push(`  [MSG ${m.id}] ${String(m.content || '')}`);
+      }
     }
     const pending = await fetchUnpostedSiteMessages(chatLinks.map(l => l.channel_id));
     const pendingLines = pending.map(p => `  [Сайт ${p.id}] ${String(p.body || '').slice(0, 120)}`);
@@ -319,7 +323,7 @@ async function handleCommand(cmd, message, args = []) {
       `- clan_directory: ${dir}`,
       `- Bot perms: ${perms}`,
       `- Привязки чата:\n${chatLines.map(x => `- ${x}`).join('\n')}`,
-      `- Последние Discord-сообщения в чатах:\n${chatLines.filter(x => x.startsWith('  [Discord')).join('\n') || '- (нет)'}`,
+      `- Последние Discord-сообщения в чатах:\n${chatLines.filter(x => x.startsWith('  [MSG ')).join('\n') || '- (нет)'}`,
       `- Ожидают отправки в Discord: ${pendingLines.join('\n') || '- (нет)'}`,
     ].join('\n');
     return channel.send(String(debugText).slice(0, 1800));

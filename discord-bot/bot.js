@@ -39,11 +39,17 @@ async function sbGet(path) {
 
 async function sbService(path, method = 'POST', body) {
   const key = process.env.SUPABASE_SERVICE_ROLE;
-  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  const opts = { method, headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(10000) };
   if (key) opts.headers.Authorization = 'Bearer ' + key;
   if (body) opts.body = JSON.stringify(body);
-  const r = await fetch(SB.base + '/rest/v1/' + path, opts);
-  return r.json().catch(() => null);
+  try {
+    const r = await fetch(SB.base + '/rest/v1/' + path, opts);
+    if (!r.ok) { console.error('Supabase error', r.status, path, (await r.text()).slice(0, 200)); return null; }
+    return r.status === 204 ? null : await r.json().catch(() => null);
+  } catch (e) {
+    console.error('Supabase request failed', path, e.message);
+    return null;
+  }
 }
 
 async function fetchClans() {
@@ -373,6 +379,8 @@ const SLASH_MAP = {
 };
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
+  // Discord ждёт ответа максимум 3 секунды — сразу откладываем и отвечаем редактированием.
+  await interaction.deferReply().catch(() => {});
   const name = interaction.commandName;
   const cmd = name === 'decide' ? (interaction.options.getBoolean('accept') ? 'принять' : 'отклонить') : (SLASH_MAP[name] || name);
   const args = [];
@@ -381,14 +389,15 @@ client.on('interactionCreate', async interaction => {
     args.push(String(o.value));
   }
   const fake = {
-    channel: { send: async payload => interaction.replied || interaction.deferred ? interaction.followUp(payload) : interaction.reply(payload) },
+    channel: { send: async payload => interaction.deferred ? interaction.editReply(payload) : interaction.reply(payload) },
     author: { id: interaction.user.id },
     channelId: interaction.channelId,
   };
   try { await handleCommand(cmd, fake, args); }
   catch (e) {
+    console.error('Slash command failed', name, e);
     const text = '❌ ' + e.message;
-    if (interaction.replied || interaction.deferred) await interaction.followUp(text); else await interaction.reply(text);
+    if (interaction.deferred) await interaction.editReply(text).catch(() => {}); else await interaction.reply(text).catch(() => {});
   }
 });
 

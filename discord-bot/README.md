@@ -17,6 +17,7 @@ node bot.js              # или npm start
 3. Render сам видит `render.yaml`: `buildCommand: npm install`, `startCommand: node bot.js`.
 4. В **Environment** заполните `BOT_TOKEN`, `SUPABASE_SERVICE_ROLE`, `CHANNEL_ID` (и при необходимости `PARSE_BATTLE_FALLBACK_URL`).
 5. **Create Web Service**.
+6. В Discord Developer Portal → ваше приложение → **Bot → Privileged Gateway Intents** включите **Message Content Intent** — иначе бот не видит текст команд (`!help` и др.).
 
 ⚠️ Discord-бот — это **долгоживущий WebSocket-процесс**, а не веб-сервер. Render может «усыплять» free-веб-сервисы без входящих HTTP-запросов. Чтобы бот не отключался:
 - включите **Auto-Deploy** и мониторинг;

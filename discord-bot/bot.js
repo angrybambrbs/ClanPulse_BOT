@@ -314,7 +314,11 @@ function escArg(s) {
 return channel.send(`Неизвестная команда: \`${cmd}\`. Напишите \`!help\`.`);
 }
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const client = new Client({ intents: [
+  GatewayIntentBits.Guilds,
+  GatewayIntentBits.GuildMessages,
+  GatewayIntentBits.MessageContent,
+] });
 
 // ── Автосбор статистики матчей (турнир-стадия) ──────────────────────────
 // Команда: !матч → бот ожидает скриншот → бот спрашивает стадию (1/2/3) и результат → создаёт матч на сайте.

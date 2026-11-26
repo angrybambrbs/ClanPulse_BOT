@@ -262,11 +262,12 @@ async function fetchChannelLinks() {
   const r = await sbGet('clan_channels?select=id,clan_id,channel_id,name,created_at&order=created_at.asc');
   return (Array.isArray(r) ? r : []).map(parseChannelLink);
 }
-async function fetchUnpostedSiteMessages(channelIds) {
-  if (!channelIds.length) return [];
-  const or = channelIds.map((c) => `and(channel_id.eq.${c},source.eq.site)`).join(',');
-  const r = await sbGet('clan_messages?select=id,body,created_at&or=(' + or + ').order=created_at.asc&limit=50');
-  return r && Array.isArray(r) ? r : [];
+async function fetchUnpostedSiteMessages(clanIds) {
+  const ids = [...new Set((clanIds || []).map(String))];
+  const rows = await sbGet('clan_messages?select=id,body,created_at&source=eq.site&order=created_at.asc&limit=200');
+  const out = Array.isArray(rows) ? rows : [];
+  const wanted = out.filter(m => m && ids.includes(String(m.clan_id)));
+  return wanted;
 }
 async function postToDiscord(channelId, body) {
   if (!config.botToken) return null;
@@ -310,7 +311,7 @@ async function handleCommand(cmd, message, args = []) {
         for (const m of ll.filter(m => m.author && !m.author.bot).slice(0, 5)) chatLines.push(`  [MSG ${m.id}] ${String(m.content || '')}`);
       }
     }
-    const pending = await fetchUnpostedSiteMessages(chatLinks.map(l => l.channel_id));
+    const pending = await fetchUnpostedSiteMessages([...new Set(chatLinks.map(l => l.clan_id))]);
     const pendingLines = pending.map(p => `  [Сайт ${p.id}] ${String(p.body || '').slice(0, 120)}`);
     const chatClanId = chatLinks.length ? chatLinks[0].clan_id : null;
     let msgRows = [];
@@ -744,10 +745,10 @@ async function bridgePoll() {
     saveBridgeState();
   }
 
-  const messages = await fetchUnpostedSiteMessages(links.map((l) => l.channel_id));
+  const messages = await fetchUnpostedSiteMessages([...new Set(links.map((l) => l.clan_id))]);
   console.log('Bridge: site->discord poll, pending', messages.length, messages.map((m) => `${m.id}:${m.body}`).join(' | ').slice(0, 300));
   for (const m of messages) {
-    const link = byChannel.get(m.channel_id) || links[0];
+    const link = links.find(l => String(l.clan_id) === String(m.clan_id)) || links[0];
     const chanId = link && link.channel_id;
     if (!chanId) continue;
     const msg = await postToDiscord(chanId, `[Сайт] ${m.body}`);

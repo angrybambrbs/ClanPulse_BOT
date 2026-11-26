@@ -79,7 +79,7 @@ function serviceKey() {
     .trim();
 }
 
-async function sbService(path, method = 'POST', body) {
+async function sbService(path, method = 'GET', body) {
   const key = serviceKey();
   const opts = { method, headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(10000) };
   if (key) {

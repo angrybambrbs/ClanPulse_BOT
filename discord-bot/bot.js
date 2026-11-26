@@ -125,9 +125,24 @@ async function sbProbe(path) {
 }
 
 async function fetchClans() {
-  // Не clan_directory: этот view фильтрует по auth.uid(), у сервисного ключа его нет.
-  const r = await sbService('clans?select=id,name,tier,about,min_gear_level&limit=50');
-  return r && Array.isArray(r) ? r : [];
+  // Сайт читает clan_directory, бот раньше — clans. Берём оба источника,
+  // чтобы список совпадал с сайтом и не терял кланы из view.
+  const [base, dir] = await Promise.all([
+    sbService('clans?select=*&limit=200'),
+    sbService('clan_directory?select=*&limit=200'),
+  ]);
+  const map = new Map();
+  for (const arr of [base, dir]) {
+    if (!Array.isArray(arr)) continue;
+    for (const c of arr) {
+      if (!c || !c.id) continue;
+      const prev = map.get(c.id) || {};
+      const merged = { ...prev };
+      for (const [k, v] of Object.entries(c)) if (v !== null && v !== undefined) merged[k] = v;
+      map.set(c.id, merged);
+    }
+  }
+  return [...map.values()].filter(c => c.name);
 }
 
 async function fetchActiveGames() {
@@ -151,9 +166,10 @@ async function fetchLeaderboardForClan(clanId) {
   return (r || []).filter(x => !clanId || x.clan_id === clanId).slice(0, 50);
 }
 async function fetchClansByName(q) {
-  const r = await sbService('clans?select=id,name,min_gear_level,tier,about&limit=50');
   const qn = normNick(q);
-  return (r || []).filter(x => normNick(x.name).includes(qn));
+  if (!qn) return [];
+  const all = await fetchClans();
+  return all.filter(x => normNick(x.name).includes(qn));
 }
 async function fetchClanByPlayer(nick) {
   const r = await sbService('players?select=nick,clan_id&limit=500');
@@ -249,6 +265,9 @@ async function handleCommand(cmd, message, args = []) {
     const clans = await probe('clans?select=id,name&limit=1');
     const members = await probe('clan_members?select=clan_id&limit=1');
     const dir = await probe('clan_directory?select=id&limit=1');
+    const allClans = await fetchClans();
+    const names = allClans.map(c => c.name).filter(Boolean);
+    const namesLine = names.length ? `${names.length}: ${names.join(', ').slice(0, 700)}` : '0';
     return channel.send(
       '🔧 **Диагностика Supabase**\n' +
       `- URL: ${SB.base} (ref ${urlRef})\n` +
@@ -257,6 +276,7 @@ async function handleCommand(cmd, message, args = []) {
         (key.ref ? ` · ref=${key.ref}` : '') +
         (key.exp ? ` · exp=${key.exp}` : '') +
         (key.length ? ` · длина=${key.length}` : '') + '\n' +
+      `- Кланы: ${namesLine}\n` +
       `- clans: ${clans}\n` +
       `- clan_members: ${members}\n` +
       `- clan_directory: ${dir}`

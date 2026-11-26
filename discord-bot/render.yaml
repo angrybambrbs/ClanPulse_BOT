@@ -4,8 +4,8 @@ services:
     env: node
     region: singapore
     plan: free
-    buildCommand: npm install
-    startCommand: node bot.js
+    buildCommand: cd discord-bot && npm install
+    startCommand: cd discord-bot && node bot.js
     healthCheckPath: /
     envVars:
       - key: BOT_TOKEN

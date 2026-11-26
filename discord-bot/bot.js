@@ -312,6 +312,13 @@ async function handleCommand(cmd, message, args = []) {
     }
     const pending = await fetchUnpostedSiteMessages(chatLinks.map(l => l.channel_id));
     const pendingLines = pending.map(p => `  [Сайт ${p.id}] ${String(p.body || '').slice(0, 120)}`);
+    const chatClanId = chatLinks.length ? chatLinks[0].clan_id : null;
+    let msgRows = [];
+    if (chatClanId) {
+      const msgs = await sbGet(`clan_messages?select=id,body,source,discord_msg_id,created_at&clan_id=eq.${chatClanId}&order=created_at.desc&limit=20`);
+      msgRows = Array.isArray(msgs) ? msgs : [];
+    }
+    const msgLines = msgRows.map(m => `- [${m.source || '?'}] ${String(m.body || '').slice(0, 80)} (discord_msg_id=${m.discord_msg_id || '—'})`);
     const debugText = [
       '🔧 **Диагностика Supabase**',
       `- URL: ${SB.base} (ref ${urlRef})`,
@@ -324,6 +331,7 @@ async function handleCommand(cmd, message, args = []) {
       `- Bot perms: ${perms}`,
       `- Привязки чата:\n${chatLines.map(x => `- ${x}`).join('\n')}`,
       `- Последние Discord-сообщения в чатах:\n${chatLines.filter(x => x.startsWith('  [MSG ')).join('\n') || '- (нет)'}`,
+      `- Сообщения clan_messages (ближайшие 20):\n${msgLines.join('\n') || '- (нет)'}`,
       `- Ожидают отправки в Discord: ${pendingLines.join('\n') || '- (нет)'}`,
     ].join('\n');
     return channel.send(String(debugText).slice(0, 1800));

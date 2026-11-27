@@ -907,15 +907,22 @@ client.on('messageCreate', async (message) => {
 
   // ── Дискорд → сайт (ручное отображение) ──
   try {
-    const links = await fetchChannelLinks();
+  // Discord -> site (messages in linked chat -> clan_messages)
+  try {
     const chanId = message.channelId || message.channel.id;
+    const links = await fetchChannelLinks();
     const link = links.find((l) => l.channel_id === chanId);
     if (link && message.content && !message.content.startsWith('!')) {
+      let userId = null;
+      try {
+        const pl = await sbGet(players?select=user_id&discord_id=eq.&limit=1);
+        if (Array.isArray(pl) && pl.length && pl[0].user_id) userId = pl[0].user_id;
+      } catch (e) { console.log('Bridge: user lookup failed', message.author.id, e.message); }
       await sbService('clan_messages', 'POST', {
-        user_id: null, body: message.content, source: 'discord', channel_id: chanId, discord_msg_id: message.id,
+        clan_id: link.clan_id || null, user_id: userId, body: message.content, source: 'discord', channel_id: chanId, discord_msg_id: message.id,
       });
     }
-  } catch (e) { /* проглочено, не важно для клиента */ }
+  } catch (e) { /* ignore, do not break commands */ }
   const text = message.content.trim();
   if (!text.startsWith('!')) return;
   const parts = text.slice(1).trim().split(/\s+/);

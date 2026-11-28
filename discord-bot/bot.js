@@ -677,6 +677,7 @@ client.on('clientReady', async () => {
     console.log('Пригласите бота: https://discord.com/oauth2/authorize?client_id=' + (client.application && client.application.id) + '&permissions=248832&scope=bot%20applications.commands');
   }
   await registerSlashCommands();
+  backfillDiscordAuthors();
 
   // Рассылка активных заданий раз в 6 часов
   setInterval(async () => {
@@ -804,6 +805,38 @@ async function discordReplyId(msg) {
     const rows = await sbGet(`clan_messages?select=id&discord_msg_id=eq.${refId}&limit=1`);
     return Array.isArray(rows) && rows.length ? rows[0].id : null;
   } catch (_) { return null; }
+}
+
+// Fill author info for older Discord-bridged messages that were inserted
+// before author_name/author_avatar existed. Runs once on bot start.
+async function backfillDiscordAuthors() {
+  try {
+    const rows = await sbGet('clan_messages?select=id,channel_id,discord_msg_id&source=eq.discord&author_name=is.null&limit=200');
+    if (!Array.isArray(rows) || !rows.length) return;
+    for (const row of rows) {
+      if (!row.channel_id || !row.discord_msg_id) continue;
+      try {
+        const r = await fetch(`https://discord.com/api/v10/channels/${row.channel_id}/messages/${row.discord_msg_id}`, {
+          headers: { Authorization: 'Bot ' + config.botToken },
+        });
+        if (!r.ok) continue;
+        const dm = await r.json();
+        if (!dm.author) continue;
+        const patch = {
+          author_name: dm.author.global_name || dm.author.username || 'Discord',
+          author_avatar: discordAvatar(dm.author),
+        };
+        if (dm.reference && dm.reference.messageId) {
+          try {
+            const par = await sbGet(`clan_messages?select=id&discord_msg_id=eq.${dm.reference.messageId}&limit=1`);
+            if (Array.isArray(par) && par.length) patch.reply_to = par[0].id;
+          } catch (_) {}
+        }
+        await sbService(`clan_messages?id=eq.${row.id}`, 'PATCH', patch);
+        console.log('Backfilled Discord author', row.id, patch.author_name);
+      } catch (e) { console.log('Backfill author failed', row.id, e.message); }
+    }
+  } catch (e) { console.log('Backfill authors failed', e.message); }
 }
 
 setInterval(bridgePoll, 30 * 1000);

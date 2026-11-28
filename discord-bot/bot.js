@@ -757,9 +757,14 @@ async function bridgePoll() {
     const link = links.find(l => String(l.clan_id) === String(m.clan_id)) || links[0];
     const chanId = link && link.channel_id;
     if (!chanId) continue;
-    const authorName = dcEscape(m.author_name || 'Сайт');
-    const text = String(m.body || '').slice(0, 2000);
-    const msg = await postToDiscord(chanId, `**${authorName}** · с сайта\n${text}`);
+    const authorName = m.author_name || 'Сайт';
+    const embed = {
+      description: String(m.body || '').slice(0, 2000),
+      color: 0x8b5cf6,
+      author: { name: authorName + ' · ClanPulse', icon_url: m.author_avatar || undefined },
+      timestamp: m.created_at,
+    };
+    const msg = await postToDiscord(chanId, { embeds: [embed], allowed_mentions: { parse: [] } });
     if (msg && msg.id) {
       await sbService(`clan_messages?id=eq.${m.id}`, 'PATCH', { source: 'site_posted', discord_msg_id: msg.id });
     }
@@ -796,7 +801,6 @@ async function bridgePoll() {
   }
 }
 
-const dcEscape = v => String(v || '').replace(/([*_`\\|>])/g, '\\$1').slice(0, 80);
 const discordAvatar = a => a && a.avatar
   ? `https://cdn.discordapp.com/avatars/${a.id}/${a.avatar}.png`
   : `https://cdn.discordapp.com/embed/avatars/${Number((a && a.discriminator) || 0) % 5}.png`;
@@ -806,8 +810,9 @@ async function discordAlreadyPosted(msgId) {
     return Array.isArray(rows) && rows.length > 0;
   } catch (_) { return false; }
 }
+const discordRefId = msg => (msg && msg.reference && (msg.reference.messageId || msg.reference.message_id)) || null;
 async function discordReplyId(msg) {
-  const refId = msg && msg.reference && msg.reference.messageId;
+  const refId = discordRefId(msg);
   if (!refId) return null;
   try {
     const rows = await sbGet(`clan_messages?select=id&discord_msg_id=eq.${refId}&limit=1`);
@@ -849,9 +854,10 @@ async function backfillDiscordAuthors() {
           author_name: dm.author.global_name || dm.author.username || 'Discord',
           author_avatar: discordAvatar(dm.author),
         };
-        if (dm.reference && dm.reference.messageId) {
+        const parentRef = discordRefId(dm);
+        if (parentRef) {
           try {
-            const par = await sbGet(`clan_messages?select=id&discord_msg_id=eq.${dm.reference.messageId}&limit=1`);
+            const par = await sbGet(`clan_messages?select=id&discord_msg_id=eq.${parentRef}&limit=1`);
             if (Array.isArray(par) && par.length) patch.reply_to = par[0].id;
           } catch (_) {}
         }

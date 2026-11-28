@@ -246,7 +246,7 @@ async function postEventsDigest() {
   for (const link of links) {
     const games = await fetchActiveGamesService(link.clan_id);
     if (!games.length) continue;
-    const title = '⚡ **ClanPulse — события**' + (link.clanName ? ` · ${link.clanName}` : '');
+    const title = '⚡ ClanPulse — события' + (link.clanName ? ` · ${link.clanName}` : '');
     // Skip if an identical digest is already among recent channel messages (restarts, 6h timer).
     let recent = [];
     try {
@@ -255,15 +255,29 @@ async function postEventsDigest() {
       });
       if (r.ok) recent = await r.json();
     } catch (_) {}
-    if (Array.isArray(recent) && recent.some(m => String(m.content || '').includes(title))) continue;
-    const lines = games.slice(0, 10).map((t) => {
+    const alreadyPosted = m => String(m.content || '').includes(title)
+      || (m.embeds || []).some(e => String(e.title || '').includes(title));
+    if (Array.isArray(recent) && recent.some(alreadyPosted)) continue;
+    const now = Date.now();
+    const upcoming = games.filter(t => new Date(t.starts_at).getTime() >= now - 3600000)
+      .slice().sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at));
+    // Only one game per day: a tournament wins over a brawl.
+    const perDay = new Map();
+    for (const t of upcoming) {
       const p = mskParts(t.starts_at);
       const isTour = t.kind === 'tournament' || /турнир|турик/i.test(String(t.title || ''));
-      const when = isTour ? `сбор ${mskParts(shiftIso(t.starts_at, -30)).time}, начало ${p.time} МСК` : `${p.time} МСК`;
-      return `• **${String(t.title || 'Событие')}** · ${when} (${p.date})`;
-    }).join('\n');
-    const text = `${title}\n@everyone\n${lines}`;
-    await postToDiscord(link.channel_id, text, { parse: ['everyone'] }).catch(() => null);
+      const cur = perDay.get(p.date);
+      if (!cur || (isTour && !cur.isTour)) perDay.set(p.date, { t, p, isTour });
+    }
+    const fields = [...perDay.entries()].slice(0, 10).map(([date, x]) => ({
+      name: `${x.isTour ? '🏆' : '⚔️'} ${String(x.t.title || 'Событие')} · ${date}`,
+      value: x.isTour
+        ? `Сбор **${mskParts(shiftIso(x.t.starts_at, -30)).time}** → начало **${x.p.time}** МСК`
+        : `Начало **${x.p.time}** МСК`,
+    }));
+    if (!fields.length) continue;
+    const e = embed({ title, description: 'Ближайшие игры клана · время МСК', fields });
+    await postToDiscord(link.channel_id, { content: '@everyone', embeds: [e.toJSON()], allowed_mentions: { parse: ['everyone'] } }).catch(() => null);
   }
 }
 

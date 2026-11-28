@@ -264,7 +264,8 @@ async function fetchChannelLinks() {
 }
 async function fetchUnpostedSiteMessages(clanIds) {
   const ids = [...new Set((clanIds || []).map(String))];
-  const rows = await sbGet('clan_messages?select=id,body,created_at&source=eq.site&order=created_at.asc&limit=200');
+  // clan_id is required to match the message to a linked Discord channel.
+  const rows = await sbGet('clan_messages?select=id,clan_id,body,created_at&source=eq.site&order=created_at.asc&limit=200');
   const out = Array.isArray(rows) ? rows : [];
   const wanted = out.filter(m => m && ids.includes(String(m.clan_id)));
   return wanted;

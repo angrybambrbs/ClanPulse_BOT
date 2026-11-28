@@ -744,12 +744,13 @@ client.on('clientReady', async () => {
 // Дискорд → сайт: сообщения из привязанных каналов вставляются в clan_messages (source='discord').
 
 // ── Мост двунаправленного чата + синхронизация заявок ──────────────────
-const bridgeState = { apps: {}, seenMsgIds: {} };
+const bridgeState = { apps: {}, seenMsgIds: {}, reactions: {}, lastReactions: 0 };
 function loadBridgeState() {
   try {
     const s = JSON.parse(require('fs').readFileSync(require('path').join(__dirname, 'bridge_state.json'), 'utf8'));
     if (s && s.apps) Object.assign(bridgeState.apps, s.apps);
     if (s && s.seenMsgIds) Object.assign(bridgeState.seenMsgIds, s.seenMsgIds);
+    if (s && s.reactions) Object.assign(bridgeState.reactions, s.reactions);
   } catch {}
 }
 function saveBridgeState() {
@@ -761,6 +762,10 @@ async function bridgePoll() {
   // Чатовый мост работает только с привязками чата; события ходят отдельно.
   const links = (await fetchChannelLinks()).filter(l => l.kind === 'chat');
   if (!links.length) return;
+  if (!bridgeState.lastReactions || Date.now() - bridgeState.lastReactions > 120000) {
+    bridgeState.lastReactions = Date.now();
+    syncSiteReactions().catch(() => {});
+  }
   const byChannel = new Map(links.map((l) => [l.channel_id, l]));
   const chanIds = [...byChannel.keys()];
 
@@ -1061,6 +1066,80 @@ client.on('messageCreate', async (message) => {
   } catch (e) {
     await message.reply('❌ Ошибка: ' + e.message);
   }
+});
+
+// ── Мост реакций: Discord ↔ сайт ─────────────────────────────────────────
+async function discordSiteUser(discordId) {
+  try {
+    const rows = await sbService(`players?select=user_id&discord_id=eq.${discordId}&limit=1`);
+    return Array.isArray(rows) && rows.length ? rows[0].user_id : null;
+  } catch (_) { return null; }
+}
+async function siteDiscordUser(userId) {
+  try {
+    const pl = await sbService(`players?select=discord_id&user_id=eq.${userId}&limit=1`);
+    if (Array.isArray(pl) && pl.length && pl[0].discord_id) return String(pl[0].discord_id);
+    const pr = await sbService(`profiles?select=avatar_url&user_id=eq.${userId}&limit=1`);
+    const av = Array.isArray(pr) && pr.length ? String((pr[0] || {}).avatar_url || '') : '';
+    const m = av.match(/\/avatars\/(\d{15,20})\//);
+    return m ? m[1] : null;
+  } catch (_) { return null; }
+}
+async function setDiscordReaction(channelId, msgId, emoji, add) {
+  const url = `https://discord.com/api/v10/channels/${channelId}/messages/${msgId}/reactions/${encodeURIComponent(emoji)}/@me`;
+  const r = await fetch(url, { method: add ? 'PUT' : 'DELETE', headers: { Authorization: 'Bot ' + config.botToken } });
+  return r.ok || r.status === 404;
+}
+async function syncSiteReactions() {
+  const rows = await sbService('message_reactions?select=kind,message_id,user_id,emoji&kind=eq.clan&limit=1000');
+  if (!Array.isArray(rows)) return;
+  const msgs = await sbService('clan_messages?select=id,channel_id,discord_msg_id&discord_msg_id=not.is.null&limit=500');
+  const byMsg = Object.fromEntries((Array.isArray(msgs) ? msgs : []).map(m => [m.id, m]));
+  const desired = {};
+  for (const r of rows) {
+    const m = byMsg[r.message_id];
+    if (!m || !m.discord_msg_id || !m.channel_id) continue;
+    const did = await siteDiscordUser(r.user_id);
+    if (!did) continue;
+    const key = m.id + '|' + r.user_id + '|' + r.emoji;
+    desired[key] = true;
+    if (!bridgeState.reactions[key] && await setDiscordReaction(m.channel_id, m.discord_msg_id, r.emoji, true)) {
+      bridgeState.reactions[key] = true;
+    }
+  }
+  for (const key of Object.keys(bridgeState.reactions || {})) {
+    if (desired[key]) continue;
+    const parts = key.split('|'), m = byMsg[parts[0]];
+    if (m && m.discord_msg_id && m.channel_id) await setDiscordReaction(m.channel_id, m.discord_msg_id, parts[2], false);
+    delete bridgeState.reactions[key];
+  }
+  saveBridgeState();
+}
+client.on('messageReactionAdd', async (reaction, user) => {
+  try {
+    if (user.bot) return;
+    const emoji = reaction.emoji && reaction.emoji.name;
+    if (!emoji || [...emoji].length > 16) return;
+    const row = await sbService(`clan_messages?select=id&discord_msg_id=eq.${reaction.message.id}&limit=1`);
+    if (!Array.isArray(row) || !row.length) return;
+    const uid = await discordSiteUser(user.id);
+    if (!uid) return;
+    await sbService('message_reactions', 'POST', { kind: 'clan', message_id: row[0].id, user_id: uid, emoji });
+    bridgeState.reactions[row[0].id + '|' + uid + '|' + emoji] = true;
+  } catch (_) {}
+});
+client.on('messageReactionRemove', async (reaction, user) => {
+  try {
+    if (user.bot) return;
+    const emoji = reaction.emoji && reaction.emoji.name;
+    if (!emoji || [...emoji].length > 16) return;
+    const row = await sbService(`clan_messages?select=id&discord_msg_id=eq.${reaction.message.id}&limit=1`);
+    if (!Array.isArray(row) || !row.length) return;
+    const uid = await discordSiteUser(user.id);
+    if (!uid) return;
+    await sbService(`message_reactions?kind=eq.clan&message_id=eq.${row[0].id}&user_id=eq.${uid}&emoji=eq.${encodeURIComponent(emoji)}`, 'DELETE');
+    delete bridgeState.reactions[row[0].id + '|' + uid + '|' + emoji];
+  } catch (_) {}
 });
 
 if (!config.botToken) {

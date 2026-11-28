@@ -678,6 +678,7 @@ client.on('clientReady', async () => {
   }
   await registerSlashCommands();
   backfillDiscordAuthors();
+  setInterval(backfillDiscordAuthors, 5 * 60 * 1000);
 
   // Рассылка активных заданий раз в 6 часов
   setInterval(async () => {
@@ -807,8 +808,27 @@ async function discordReplyId(msg) {
   } catch (_) { return null; }
 }
 
+async function fetchDiscordMessage(channelId, msgId, attempts = 5) {
+  for (let i = 0; i < attempts; i++) {
+    let r;
+    try {
+      r = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages/${msgId}`, {
+        headers: { Authorization: 'Bot ' + config.botToken },
+      });
+    } catch (e) { return null; }
+    if (r.ok) return await r.json().catch(() => null);
+    if (r.status === 429) {
+      let wait = 1200;
+      try { const j = await r.json(); if (j.retry_after) wait = Math.ceil(j.retry_after * 1000) + 300; } catch (_) {}
+      await new Promise(res => setTimeout(res, Math.min(wait, 15000)));
+      continue;
+    }
+    return null;
+  }
+  return null;
+}
 // Fill author info for older Discord-bridged messages that were inserted
-// before author_name/author_avatar existed. Runs once on bot start.
+// before author_name/author_avatar existed. Safe to re-run: only null rows.
 async function backfillDiscordAuthors() {
   try {
     const rows = await sbGet('clan_messages?select=id,channel_id,discord_msg_id&source=eq.discord&author_name=is.null&limit=200');
@@ -816,12 +836,8 @@ async function backfillDiscordAuthors() {
     for (const row of rows) {
       if (!row.channel_id || !row.discord_msg_id) continue;
       try {
-        const r = await fetch(`https://discord.com/api/v10/channels/${row.channel_id}/messages/${row.discord_msg_id}`, {
-          headers: { Authorization: 'Bot ' + config.botToken },
-        });
-        if (!r.ok) continue;
-        const dm = await r.json();
-        if (!dm.author) continue;
+        const dm = await fetchDiscordMessage(row.channel_id, row.discord_msg_id);
+        if (!dm || !dm.author) continue;
         const patch = {
           author_name: dm.author.global_name || dm.author.username || 'Discord',
           author_avatar: discordAvatar(dm.author),
@@ -835,6 +851,7 @@ async function backfillDiscordAuthors() {
         await sbService(`clan_messages?id=eq.${row.id}`, 'PATCH', patch);
         console.log('Backfilled Discord author', row.id, patch.author_name);
       } catch (e) { console.log('Backfill author failed', row.id, e.message); }
+      await new Promise(res => setTimeout(res, 300));
     }
   } catch (e) { console.log('Backfill authors failed', e.message); }
 }

@@ -231,6 +231,12 @@ async function repostUnrecognizedDigest() {
   const lines = rows.slice(0, 8).map(m => `- ${new Date(m.played_at).toLocaleDateString('ru')} — матч \`${m.id}\``).join('\n');
   await postToDiscord(target.channel_id, `🔍 **Матчи без статистики**\n${lines}`);
 }
+const mskParts = iso => {
+  const f = new Intl.DateTimeFormat('ru-RU', { timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+  const parts = Object.fromEntries(f.formatToParts(new Date(iso)).map(x => [x.type, x.value]));
+  return { date: `${parts.day}.${parts.month}`, time: `${parts.hour}:${parts.minute}` };
+};
+const shiftIso = (iso, minutes) => new Date(new Date(iso).getTime() + minutes * 60000).toISOString();
 async function postEventsDigest() {
   const all = await fetchChannelLinks();
   const events = all.filter(l => l.kind === 'events');
@@ -240,9 +246,24 @@ async function postEventsDigest() {
   for (const link of links) {
     const games = await fetchActiveGamesService(link.clan_id);
     if (!games.length) continue;
-    const title = '⚡ ClanPulse — события' + (link.clanName ? ` · ${link.clanName}` : '');
-    const e = embed({ title, description: games.slice(0, 10).map((t) => `- **${t.title}** (${new Date(t.starts_at).toLocaleString('ru')})`).join('\n') });
-    await postToDiscord(link.channel_id, e).catch(() => null);
+    const title = '⚡ **ClanPulse — события**' + (link.clanName ? ` · ${link.clanName}` : '');
+    // Skip if an identical digest is already among recent channel messages (restarts, 6h timer).
+    let recent = [];
+    try {
+      const r = await fetch(`https://discord.com/api/v10/channels/${link.channel_id}/messages?limit=20`, {
+        headers: { Authorization: 'Bot ' + config.botToken },
+      });
+      if (r.ok) recent = await r.json();
+    } catch (_) {}
+    if (Array.isArray(recent) && recent.some(m => String(m.content || '').includes(title))) continue;
+    const lines = games.slice(0, 10).map((t) => {
+      const p = mskParts(t.starts_at);
+      const isTour = t.kind === 'tournament' || /турнир|турик/i.test(String(t.title || ''));
+      const when = isTour ? `сбор ${mskParts(shiftIso(t.starts_at, -30)).time}, начало ${p.time} МСК` : `${p.time} МСК`;
+      return `• **${String(t.title || 'Событие')}** · ${when} (${p.date})`;
+    }).join('\n');
+    const text = `${title}\n@everyone\n${lines}`;
+    await postToDiscord(link.channel_id, text, { parse: ['everyone'] }).catch(() => null);
   }
 }
 
@@ -270,11 +291,11 @@ async function fetchUnpostedSiteMessages(clanIds) {
   const wanted = out.filter(m => m && ids.includes(String(m.clan_id)));
   return wanted;
 }
-async function postToDiscord(channelId, body) {
+async function postToDiscord(channelId, body, mentions) {
   if (!config.botToken) return null;
   const payload = (body && typeof body === 'object' && !Array.isArray(body))
     ? (typeof body.toJSON === 'function' ? { embeds: [body.toJSON()] } : body)
-    : { content: String(body == null ? '' : body), allowedMentions: { parse: [] } };
+    : { content: String(body == null ? '' : body), allowed_mentions: mentions || { parse: [] } };
   const r = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bot ' + config.botToken },

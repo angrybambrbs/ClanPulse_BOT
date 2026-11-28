@@ -265,7 +265,7 @@ async function fetchChannelLinks() {
 async function fetchUnpostedSiteMessages(clanIds) {
   const ids = [...new Set((clanIds || []).map(String))];
   // clan_id is required to match the message to a linked Discord channel.
-  const rows = await sbGet('clan_messages?select=id,clan_id,body,created_at,author_name,author_avatar&source=eq.site&order=created_at.asc&limit=200');
+  const rows = await sbGet('clan_messages?select=id,clan_id,body,created_at,author_name,author_avatar,reply_to&source=eq.site&order=created_at.asc&limit=200');
   const out = Array.isArray(rows) ? rows : [];
   const wanted = out.filter(m => m && ids.includes(String(m.clan_id)));
   return wanted;
@@ -764,7 +764,15 @@ async function bridgePoll() {
       author: { name: authorName + ' · ClanPulse', icon_url: m.author_avatar || undefined },
       timestamp: m.created_at,
     };
-    const msg = await postToDiscord(chanId, { embeds: [embed], allowed_mentions: { parse: [] } });
+    const payload = { embeds: [embed], allowed_mentions: { parse: [] } };
+    if (m.reply_to) {
+      try {
+        const par = await sbGet(`clan_messages?select=discord_msg_id&id=eq.${m.reply_to}&limit=1`);
+        const refId = Array.isArray(par) && par.length ? par[0].discord_msg_id : null;
+        if (refId) payload.message_reference = { message_id: refId, fail_if_not_exists: false };
+      } catch (e) { console.log('Reply lookup failed', m.reply_to, e.message); }
+    }
+    const msg = await postToDiscord(chanId, payload);
     if (msg && msg.id) {
       await sbService(`clan_messages?id=eq.${m.id}`, 'PATCH', { source: 'site_posted', discord_msg_id: msg.id });
     }

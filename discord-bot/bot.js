@@ -757,14 +757,9 @@ async function bridgePoll() {
     const link = links.find(l => String(l.clan_id) === String(m.clan_id)) || links[0];
     const chanId = link && link.channel_id;
     if (!chanId) continue;
-    const authorName = m.author_name || 'Сайт';
-    const embed = {
-      description: String(m.body || '').slice(0, 2000),
-      color: 0x8b5cf6,
-      author: { name: authorName + ' · ClanPulse', icon_url: m.author_avatar || undefined },
-      timestamp: m.created_at,
-    };
-    const msg = await postToDiscord(chanId, { embeds: [embed], allowed_mentions: { parse: [] } });
+    const authorName = dcEscape(m.author_name || 'Сайт');
+    const text = String(m.body || '').slice(0, 2000);
+    const msg = await postToDiscord(chanId, `**${authorName}** · с сайта\n${text}`);
     if (msg && msg.id) {
       await sbService(`clan_messages?id=eq.${m.id}`, 'PATCH', { source: 'site_posted', discord_msg_id: msg.id });
     }
@@ -801,6 +796,7 @@ async function bridgePoll() {
   }
 }
 
+const dcEscape = v => String(v || '').replace(/([*_`\\|>])/g, '\\$1').slice(0, 80);
 const discordAvatar = a => a && a.avatar
   ? `https://cdn.discordapp.com/avatars/${a.id}/${a.avatar}.png`
   : `https://cdn.discordapp.com/embed/avatars/${Number((a && a.discriminator) || 0) % 5}.png`;

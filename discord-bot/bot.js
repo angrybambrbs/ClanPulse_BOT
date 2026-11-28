@@ -265,17 +265,20 @@ async function fetchChannelLinks() {
 async function fetchUnpostedSiteMessages(clanIds) {
   const ids = [...new Set((clanIds || []).map(String))];
   // clan_id is required to match the message to a linked Discord channel.
-  const rows = await sbGet('clan_messages?select=id,clan_id,body,created_at&source=eq.site&order=created_at.asc&limit=200');
+  const rows = await sbGet('clan_messages?select=id,clan_id,body,created_at,author_name,author_avatar&source=eq.site&order=created_at.asc&limit=200');
   const out = Array.isArray(rows) ? rows : [];
   const wanted = out.filter(m => m && ids.includes(String(m.clan_id)));
   return wanted;
 }
 async function postToDiscord(channelId, body) {
   if (!config.botToken) return null;
+  const payload = (body && typeof body === 'object' && !Array.isArray(body))
+    ? (typeof body.toJSON === 'function' ? { embeds: [body.toJSON()] } : body)
+    : { content: String(body == null ? '' : body), allowedMentions: { parse: [] } };
   const r = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bot ' + config.botToken },
-    body: JSON.stringify({ content: body, allowedMentions: { parse: [] } }),
+    body: JSON.stringify(payload),
   });
   return r.json().catch(() => null);
 }
@@ -754,7 +757,14 @@ async function bridgePoll() {
     const link = links.find(l => String(l.clan_id) === String(m.clan_id)) || links[0];
     const chanId = link && link.channel_id;
     if (!chanId) continue;
-    const msg = await postToDiscord(chanId, `[Сайт] ${m.body}`);
+    const authorName = m.author_name || 'Сайт';
+    const embed = {
+      description: String(m.body || '').slice(0, 2000),
+      color: 0x8b5cf6,
+      author: { name: authorName + ' · ClanPulse', icon_url: m.author_avatar || undefined },
+      timestamp: m.created_at,
+    };
+    const msg = await postToDiscord(chanId, { embeds: [embed], allowed_mentions: { parse: [] } });
     if (msg && msg.id) {
       await sbService(`clan_messages?id=eq.${m.id}`, 'PATCH', { source: 'site_posted', discord_msg_id: msg.id });
     }

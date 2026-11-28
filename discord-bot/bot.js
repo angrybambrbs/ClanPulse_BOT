@@ -768,6 +768,13 @@ async function bridgePoll() {
   }
   const byChannel = new Map(links.map((l) => [l.channel_id, l]));
   const chanIds = [...byChannel.keys()];
+  // One query instead of one per message: message IDs and reply map.
+  const prior = await sbService('clan_messages?select=id,discord_msg_id&discord_msg_id=not.is.null&limit=500');
+  const priorRows = Array.isArray(prior) ? prior : [];
+  const discordBySiteId = Object.fromEntries(priorRows.map(r => [r.id, r.discord_msg_id]));
+  const siteIdByDiscord = Object.fromEntries(priorRows.map(r => [r.discord_msg_id, r.id]));
+  const seenDiscordIds = new Set(priorRows.map(r => r.discord_msg_id));
+  const discordUserCache = new Map();
 
   // Сайт → Discord
   // Заявки: новые записи clan_applications — постим в канал
@@ -805,12 +812,8 @@ async function bridgePoll() {
       timestamp: m.created_at,
     };
     const payload = { embeds: [embed], allowed_mentions: { parse: [] } };
-    if (m.reply_to) {
-      try {
-        const par = await sbGet(`clan_messages?select=discord_msg_id&id=eq.${m.reply_to}&limit=1`);
-        const refId = Array.isArray(par) && par.length ? par[0].discord_msg_id : null;
-        if (refId) payload.message_reference = { message_id: refId, fail_if_not_exists: false };
-      } catch (e) { console.log('Reply lookup failed', m.reply_to, e.message); }
+    if (m.reply_to && discordBySiteId[m.reply_to]) {
+      payload.message_reference = { message_id: discordBySiteId[m.reply_to], fail_if_not_exists: false };
     }
     const msg = await postToDiscord(chanId, payload);
     if (msg && msg.id) {
@@ -820,8 +823,7 @@ async function bridgePoll() {
 
   // Дискорд → сайт (сообщения в привязанных каналах → clan_messages)
   if (chanIds.length) {
-    const linksArr = (await fetchChannelLinks()).filter(l => l.kind === 'chat');
-    for (const link of linksArr) {
+    for (const link of links) {
       const r2 = await fetch(`https://discord.com/api/v10/channels/${link.channel_id}/messages?limit=20`, {
         headers: { Authorization: 'Bot ' + config.botToken },
       });
@@ -832,18 +834,23 @@ async function bridgePoll() {
         if (!dm.author || dm.author.bot) continue;
         const body = String(dm.content || '').trim();
         if (!body) continue;
-        if (await discordAlreadyPosted(dm.id)) continue;
-        let userId = null;
-        try {
-          const pl = await sbGet(`players?select=user_id&discord_id=eq.${dm.author.id}&limit=1`);
-          if (Array.isArray(pl) && pl.length && pl[0].user_id) userId = pl[0].user_id;
-        } catch (e) { console.log('Bridge: user lookup failed', dm.author.id, e.message); }
+        if (seenDiscordIds.has(dm.id)) continue;
+        if (!discordUserCache.has(dm.author.id)) {
+          let uid = null;
+          try {
+            const pl = await sbGet(`players?select=user_id&discord_id=eq.${dm.author.id}&limit=1`);
+            if (Array.isArray(pl) && pl.length && pl[0].user_id) uid = pl[0].user_id;
+          } catch (e) { console.log('Bridge: user lookup failed', dm.author.id, e.message); }
+          discordUserCache.set(dm.author.id, uid);
+        }
+        const userId = discordUserCache.get(dm.author.id);
         console.log('Bridge: discord->site insert', { clan: link.clan_id, channel: link.channel_id, msgId: dm.id, body });
         await sbService('clan_messages', 'POST', {
           clan_id: link.clan_id || null, user_id: userId, body, source: 'discord', channel_id: link.channel_id, discord_msg_id: dm.id,
           author_name: dm.author.global_name || dm.author.username || 'Discord', author_avatar: discordAvatar(dm.author),
-          reply_to: await discordReplyId(dm),
+          reply_to: siteIdByDiscord[discordRefId(dm)] || null,
         });
+        seenDiscordIds.add(dm.id);
       }
     }
   }
@@ -917,7 +924,7 @@ async function backfillDiscordAuthors() {
   } catch (e) { console.log('Backfill authors failed', e.message); }
 }
 
-setInterval(bridgePoll, 30 * 1000);
+setInterval(bridgePoll, 8 * 1000);
 
 // Завершение сбора матча — создаём запись на сайте через service_role
 // Скачиваем скриншот Discord → base64

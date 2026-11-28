@@ -764,24 +764,46 @@ async function bridgePoll() {
       const r2 = await fetch(`https://discord.com/api/v10/channels/${link.channel_id}/messages?limit=20`, {
         headers: { Authorization: 'Bot ' + config.botToken },
       });
-      const list = await r2.json().catch(() => []);
-      if (!Array.isArray(list)) continue;
+      const listRaw = await r2.json().catch(() => []);
+      // Insert oldest first so a reply can find its parent message.
+      const list = Array.isArray(listRaw) ? listRaw.slice().reverse() : [];
       for (const dm of list) {
         if (!dm.author || dm.author.bot) continue;
         const body = String(dm.content || '').trim();
         if (!body) continue;
-        console.log('Bridge: discord->site insert', { clan: link.clan_id, channel: link.channel_id, msgId: dm.id, body });
+        if (await discordAlreadyPosted(dm.id)) continue;
         let userId = null;
         try {
           const pl = await sbGet(`players?select=user_id&discord_id=eq.${dm.author.id}&limit=1`);
           if (Array.isArray(pl) && pl.length && pl[0].user_id) userId = pl[0].user_id;
         } catch (e) { console.log('Bridge: user lookup failed', dm.author.id, e.message); }
+        console.log('Bridge: discord->site insert', { clan: link.clan_id, channel: link.channel_id, msgId: dm.id, body });
         await sbService('clan_messages', 'POST', {
           clan_id: link.clan_id || null, user_id: userId, body, source: 'discord', channel_id: link.channel_id, discord_msg_id: dm.id,
+          author_name: dm.author.global_name || dm.author.username || 'Discord', author_avatar: discordAvatar(dm.author),
+          reply_to: await discordReplyId(dm),
         });
       }
     }
   }
+}
+
+const discordAvatar = a => a && a.avatar
+  ? `https://cdn.discordapp.com/avatars/${a.id}/${a.avatar}.png`
+  : `https://cdn.discordapp.com/embed/avatars/${Number((a && a.discriminator) || 0) % 5}.png`;
+async function discordAlreadyPosted(msgId) {
+  try {
+    const rows = await sbGet(`clan_messages?select=id&discord_msg_id=eq.${msgId}&limit=1`);
+    return Array.isArray(rows) && rows.length > 0;
+  } catch (_) { return false; }
+}
+async function discordReplyId(msg) {
+  const refId = msg && msg.reference && msg.reference.messageId;
+  if (!refId) return null;
+  try {
+    const rows = await sbGet(`clan_messages?select=id&discord_msg_id=eq.${refId}&limit=1`);
+    return Array.isArray(rows) && rows.length ? rows[0].id : null;
+  } catch (_) { return null; }
 }
 
 setInterval(bridgePoll, 30 * 1000);
@@ -907,19 +929,19 @@ client.on('messageCreate', async (message) => {
 
   // ── Дискорд → сайт (ручное отображение) ──
   try {
-  // Discord -> site (messages in linked chat -> clan_messages)
-  try {
     const chanId = message.channelId || message.channel.id;
     const links = await fetchChannelLinks();
     const link = links.find((l) => l.channel_id === chanId);
-    if (link && message.content && !message.content.startsWith('!')) {
+    if (link && message.content && !message.content.startsWith('!') && !(await discordAlreadyPosted(message.id))) {
       let userId = null;
       try {
-        const pl = await sbGet(players?select=user_id&discord_id=eq.&limit=1);
+        const pl = await sbGet(`players?select=user_id&discord_id=eq.${message.author.id}&limit=1`);
         if (Array.isArray(pl) && pl.length && pl[0].user_id) userId = pl[0].user_id;
       } catch (e) { console.log('Bridge: user lookup failed', message.author.id, e.message); }
       await sbService('clan_messages', 'POST', {
         clan_id: link.clan_id || null, user_id: userId, body: message.content, source: 'discord', channel_id: chanId, discord_msg_id: message.id,
+        author_name: message.author.global_name || message.author.username || 'Discord', author_avatar: discordAvatar(message.author),
+        reply_to: await discordReplyId(message),
       });
     }
   } catch (e) { /* ignore, do not break commands */ }
